@@ -1,0 +1,509 @@
+{
+  "name": "WhatsApp Appointment Bot - LOLIMSA",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-crm",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-node",
+      "name": "Webhook (Recibe WhatsApp)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extraer datos del mensaje entrante de Evolution API\nconst body = $input.first().json.body || $input.first().json;\nconst data = body.data || body;\n\n// Ignorar mensajes propios\nif (data?.key?.fromMe === true) {\n  return [{ json: { ignore: true } }];\n}\n\n// Extraer phone\nconst remoteJid = data?.key?.remoteJid || '';\nconst phone = remoteJid.split('@')[0];\n\n// Extraer texto\nconst msg = data?.message || {};\nconst text = (msg?.conversation || msg?.extendedTextMessage?.text || '').trim();\n\n// Extraer nombre\nconst pushName = data?.pushName || '';\n\n// Extraer evento\nconst event = body.event || data?.event || 'messages.upsert';\n\nif (!phone || !text) {\n  return [{ json: { ignore: true } }];\n}\n\nreturn [{ json: { phone, text, pushName, event, ignore: false } }];"
+      },
+      "id": "extraer-datos",
+      "name": "Extraer datos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.ignore }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "notEquals" }
+            }
+          ]
+        }
+      },
+      "id": "check-ignore",
+      "name": "¿Mensaje válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gestión de sesiones usando Static Data de n8n\n// Cuando migres a PostgreSQL, reemplaza este nodo por una query SELECT\n\nconst phone = $input.first().json.phone;\nconst text = $input.first().json.text;\nconst pushName = $input.first().json.pushName;\n\n// Obtener static data (persiste entre ejecuciones)\nconst staticData = $getWorkflowStaticData('global');\n\n// Inicializar storage si no existe\nif (!staticData.sessions) {\n  staticData.sessions = {};\n}\n\n// Limpiar sesiones expiradas (más de 15 minutos)\nconst now = Date.now();\nfor (const p of Object.keys(staticData.sessions)) {\n  const session = staticData.sessions[p];\n  if (session.lastInteraction && (now - session.lastInteraction) > 15 * 60 * 1000) {\n    delete staticData.sessions[p];\n  }\n}\n\n// Obtener sesión actual o crear nueva\nlet session = staticData.sessions[phone] || { state: 'START', data: {} };\nsession.lastInteraction = now;\n\n// Comandos globales\nconst textLower = text.toLowerCase();\nif (textLower === 'salir' || textLower === 'cancelar') {\n  delete staticData.sessions[phone];\n  return [{ json: { \n    phone, text, pushName,\n    state: 'COMMAND_EXIT',\n    sessionData: {},\n    command: 'exit'\n  }}];\n}\n\nif (textLower === 'retroceder' && session.state !== 'START') {\n  const history = session.data.history || [];\n  if (history.length > 1) {\n    history.pop();\n    session.state = history[history.length - 1];\n    session.data.history = history;\n  }\n}\n\n// Guardar sesión actualizada\nstaticData.sessions[phone] = session;\n\nreturn [{ json: {\n  phone,\n  text,\n  textLower,\n  pushName,\n  state: session.state,\n  sessionData: session.data\n}}];"
+      },
+      "id": "get-session",
+      "name": "Obtener Sesión",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "START", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_DOC_TYPE", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_DOC_NUMBER", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_ESTABLISHMENT", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_SPECIALTY", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_DOCTOR", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_AVAILABLE_DATE", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_TIME", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_APPOINTMENT_TYPE", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_CONFIRMATION", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "AWAITING_PAYMENT_CONFIRMATION", "operator": { "type": "string", "operation": "equals" } }] } },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.state }}", "rightValue": "COMMAND_EXIT", "operator": { "type": "string", "operation": "equals" } }] } }
+          ]
+        },
+        "fallbackOutput": "extra"
+      },
+      "id": "switch-state",
+      "name": "Switch por Estado",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado START: Bienvenida y solicitar tipo de documento\nconst phone = $input.first().json.phone;\nconst pushName = $input.first().json.pushName;\n\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.sessions) staticData.sessions = {};\n\n// Cargar tipos de documento desde LOLCLI (hardcoded del Python bot)\nconst docTypes = [\n  { tidcod: '01', tiddes: 'DNI' },\n  { tidcod: '02', tiddes: 'Carné de Extranjería' },\n  { tidcod: '03', tiddes: 'Pasaporte' },\n  { tidcod: '04', tiddes: 'Otro' }\n];\n\nlet menu = '👋 ¡Hola' + (pushName ? ', ' + pushName : '') + '! Bienvenido/a a *LOLIMSA*.\\n\\n';\nmenu += 'Soy tu asistente virtual y estoy aquí para ayudarte a agendar tu cita médica. 😊\\n\\n';\nmenu += '📋 Para comenzar, ¿cuál es tu tipo de documento de identidad?\\n\\n';\ndocTypes.forEach((doc, i) => {\n  menu += `*${i+1}.* ${doc.tiddes}\\n`;\n});\nmenu += '\\n_Escribe el número de tu elección._';\n\n// Actualizar sesión\nstaticData.sessions[phone] = {\n  state: 'AWAITING_DOC_TYPE',\n  data: {\n    history: ['START', 'AWAITING_DOC_TYPE'],\n    docTypeOptions: docTypes\n  },\n  lastInteraction: Date.now()\n};\n\nreturn [{ json: { phone, reply: menu } }];"
+      },
+      "id": "state-start",
+      "name": "START",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado AWAITING_DOC_TYPE: Procesar elección de tipo de documento\nconst { phone, text, sessionData } = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\n\nconst docTypes = sessionData.docTypeOptions || [\n  { tidcod: '01', tiddes: 'DNI' },\n  { tidcod: '02', tiddes: 'Carné de Extranjería' },\n  { tidcod: '03', tiddes: 'Pasaporte' },\n  { tidcod: '04', tiddes: 'Otro' }\n];\n\n// Procesar elección\nlet selected = null;\nconst num = parseInt(text);\nif (!isNaN(num) && num >= 1 && num <= docTypes.length) {\n  selected = docTypes[num - 1];\n} else {\n  // Buscar por nombre\n  const textLow = text.toLowerCase();\n  selected = docTypes.find(d => d.tiddes.toLowerCase().includes(textLow));\n}\n\nif (!selected) {\n  return [{ json: { \n    phone, \n    reply: '❓ No reconocí tu elección. Por favor, escribe el *número* correspondiente a tu tipo de documento.'\n  }}];\n}\n\n// Actualizar sesión\nstaticData.sessions[phone] = {\n  state: 'AWAITING_DOC_NUMBER',\n  data: {\n    ...sessionData,\n    tidcod: selected.tidcod,\n    tiddes: selected.tiddes,\n    history: [...(sessionData.history || []), 'AWAITING_DOC_NUMBER']\n  },\n  lastInteraction: Date.now()\n};\n\nreturn [{ json: { \n  phone,\n  reply: `Perfecto, seleccionaste *${selected.tiddes}*. 📄\\n\\nAhora, por favor ingresa tu número de ${selected.tiddes}.`\n}}];"
+      },
+      "id": "state-doc-type",
+      "name": "AWAITING_DOC_TYPE",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado AWAITING_DOC_NUMBER: Validar documento con LOLCLI\nconst { phone, text, sessionData } = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\n\nconst tidcod = sessionData.tidcod;\nconst docNumber = text.trim();\n\n// Validar DNI\nif (tidcod === '01' && (!/^\\d{8}$/.test(docNumber))) {\n  return [{ json: {\n    phone,\n    reply: '⚠️ El DNI debe tener exactamente *8 dígitos numéricos*.\\n\\n¿Puedes verificarlo e intentarlo de nuevo? 🙏',\n    nextStep: null\n  }}];\n}\n\n// Guardar doc number y pasar a validación\nstaticData.sessions[phone].data.pacdoc = docNumber;\nstaticData.sessions[phone].data.history = [...(sessionData.history || []), 'AWAITING_DOC_NUMBER'];\n\nreturn [{ json: {\n  phone,\n  pacdoc: docNumber,\n  tidcod,\n  sessionData: staticData.sessions[phone].data,\n  reply_pending: true\n}}];"
+      },
+      "id": "state-doc-number",
+      "name": "AWAITING_DOC_NUMBER",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOLCLI_API_URL }}/ValidarPaciente",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"tidcod\": \"{{ $json.tidcod }}\",\n  \"pacdoc\": \"{{ $json.pacdoc }}\"\n}",
+        "options": {}
+      },
+      "id": "validate-patient",
+      "name": "Validar Paciente LOLCLI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Procesar respuesta de ValidarPaciente\nconst response = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\n\n// Obtener datos del nodo anterior\nconst sessionNode = $('AWAITING_DOC_NUMBER').first().json;\nconst phone = sessionNode.phone;\nconst session = staticData.sessions[phone];\nconst sessionData = session.data;\n\nconst pacientes = response.paciente || [];\n\nif (pacientes.length > 0) {\n  // Paciente existente\n  const paciente = pacientes[0];\n  session.data.pachis = paciente.pachis;\n  session.data.paciente_nombre = paciente.pacpmn;\n  session.data.pacdir = paciente.pacdir || '';\n  session.state = 'AWAITING_ESTABLISHMENT';\n  session.data.history = [...(sessionData.history || []), 'AWAITING_ESTABLISHMENT'];\n  staticData.sessions[phone] = session;\n\n  return [{ json: {\n    phone,\n    patientFound: true,\n    patientName: paciente.pacpmn,\n    sessionData: session.data,\n    nextState: 'AWAITING_ESTABLISHMENT'\n  }}];\n} else {\n  // Paciente nuevo\n  session.state = 'AWAITING_NEW_PATIENT';\n  session.data.isNewPatient = true;\n  staticData.sessions[phone] = session;\n\n  return [{ json: {\n    phone,\n    patientFound: false,\n    sessionData: session.data,\n    nextState: 'AWAITING_NEW_PATIENT'\n  }}];\n}"
+      },
+      "id": "process-patient",
+      "name": "Procesar Paciente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.patientFound }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "patient-exists",
+      "name": "¿Paciente existe?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1600, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOLCLI_API_URL }}/ListaEstablecimientos",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"entidad\": \"{{ $env.LOLCLI_ENTIDAD }}\"\n}",
+        "options": {}
+      },
+      "id": "list-establishments",
+      "name": "Listar Establecimientos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1800, 150]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Formatear menú de establecimientos\nconst response = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\n\n// Obtener phone desde el nodo de proceso de paciente\nconst processNode = $('Procesar Paciente').first().json;\nconst phone = processNode.phone;\nconst patientName = processNode.patientName;\nconst session = staticData.sessions[phone];\n\nconst establecimientos = response.establecimientos || [];\n\nif (establecimientos.length === 0) {\n  return [{ json: {\n    phone,\n    reply: '😔 Lo sentimos, no hay sedes disponibles en este momento. Por favor, intenta más tarde o llámanos directamente.'\n  }}];\n}\n\n// Formatear menú\nlet menu = `¡Hola de nuevo, *${patientName}*! 😊\\n\\n`;\nmenu += '🏥 ¿En cuál de nuestras sedes te gustaría atenderte?\\n\\n';\nestablecimientos.forEach((est, i) => {\n  menu += `*${i+1}.* ${est.sisent}\\n`;\n});\nmenu += '\\n_Escribe el número o el nombre de tu elección._\\n_También puedes escribir *retroceder* o *salir*._';\n\n// Actualizar sesión\nsession.data.establishmentOptions = establecimientos;\nsession.state = 'AWAITING_ESTABLISHMENT';\nstaticData.sessions[phone] = session;\n\nreturn [{ json: { phone, reply: menu } }];"
+      },
+      "id": "format-establishments",
+      "name": "Formatear Establecimientos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 150]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado AWAITING_ESTABLISHMENT\nconst { phone, text, sessionData } = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst session = staticData.sessions[phone];\n\nconst options = sessionData.establishmentOptions || [];\n\n// Procesar elección\nlet selected = null;\nconst num = parseInt(text);\nif (!isNaN(num) && num >= 1 && num <= options.length) {\n  selected = options[num - 1];\n} else {\n  const textLow = text.toLowerCase();\n  selected = options.find(o => o.sisent.toLowerCase().includes(textLow));\n}\n\nif (!selected) {\n  return [{ json: {\n    phone,\n    reply: '❓ No reconocí tu elección. Por favor, escribe el *número* de la sede que prefieres.'\n  }}];\n}\n\n// Actualizar sesión\nsession.data.siscod = selected.siscod;\nsession.data.establishment_name = selected.sisent;\nsession.state = 'AWAITING_SPECIALTY';\nsession.data.history = [...(sessionData.history || []), 'AWAITING_SPECIALTY'];\nstaticData.sessions[phone] = session;\n\nreturn [{ json: {\n  phone,\n  siscod: selected.siscod,\n  establishmentName: selected.sisent,\n  sessionData: session.data,\n  needsSpecialties: true\n}}];"
+      },
+      "id": "state-establishment",
+      "name": "AWAITING_ESTABLISHMENT",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOLCLI_API_URL }}/ListaServicios",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"siscod\": \"{{ $json.siscod }}\"\n}",
+        "options": {}
+      },
+      "id": "list-services",
+      "name": "Listar Especialidades",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Formatear menú de especialidades\nconst response = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst estNode = $('AWAITING_ESTABLISHMENT').first().json;\nconst phone = estNode.phone;\nconst session = staticData.sessions[phone];\n\nconst servicios = response.servicios || [];\n\nlet menu = `🏥 *${session.data.establishment_name}*\\n\\n`;\nmenu += '🩺 ¿Para qué especialidad necesitas la cita?\\n\\n';\nservicios.forEach((s, i) => {\n  menu += `*${i+1}.* ${s.serdes}\\n`;\n});\nmenu += '\\n_Escribe el número o nombre de la especialidad._';\n\nsession.data.specialtyOptions = servicios;\nstaticData.sessions[phone] = session;\n\nreturn [{ json: { phone, reply: menu } }];"
+      },
+      "id": "format-specialties",
+      "name": "Formatear Especialidades",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado AWAITING_SPECIALTY\nconst { phone, text, sessionData } = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst session = staticData.sessions[phone];\n\nconst options = sessionData.specialtyOptions || [];\n\nlet selected = null;\nconst num = parseInt(text);\nif (!isNaN(num) && num >= 1 && num <= options.length) {\n  selected = options[num - 1];\n} else {\n  selected = options.find(o => o.serdes.toLowerCase().includes(text.toLowerCase()));\n}\n\nif (!selected) {\n  return [{ json: {\n    phone,\n    reply: '❓ No reconocí esa especialidad. Por favor, escribe el número de tu elección.'\n  }}];\n}\n\nsession.data.sercod = selected.sercod;\nsession.data.sernam = selected.serdes;\nsession.state = 'AWAITING_DOCTOR';\nsession.data.history = [...(sessionData.history || []), 'AWAITING_DOCTOR'];\nstaticData.sessions[phone] = session;\n\nreturn [{ json: {\n  phone,\n  siscod: sessionData.siscod,\n  sercod: selected.sercod,\n  specialtyName: selected.serdes,\n  sessionData: session.data\n}}];"
+      },
+      "id": "state-specialty",
+      "name": "AWAITING_SPECIALTY",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOLCLI_API_URL }}/ListaMedicos",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"siscod\": \"{{ $json.siscod }}\",\n  \"sercod\": \"{{ $json.sercod }}\"\n}",
+        "options": {}
+      },
+      "id": "list-doctors",
+      "name": "Listar Médicos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Formatear menú de médicos\nconst response = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst specNode = $('AWAITING_SPECIALTY').first().json;\nconst phone = specNode.phone;\nconst session = staticData.sessions[phone];\n\nconst medicos = response.medicos || [];\n\nif (medicos.length === 0) {\n  session.state = 'AWAITING_SPECIALTY';\n  staticData.sessions[phone] = session;\n  return [{ json: {\n    phone,\n    reply: `😔 Lo sentimos, no hay médicos disponibles para *${specNode.specialtyName}* en esta sede.\\n\\nEscribe *retroceder* para elegir otra especialidad.`\n  }}];\n}\n\nlet menu = `👨‍⚕️ Médicos disponibles para *${specNode.specialtyName}*:\\n\\n`;\nmedicos.forEach((m, i) => {\n  menu += `*${i+1}.* Dr(a). ${m.mednam}\\n`;\n});\nmenu += '\\n_Escribe el número del médico de tu preferencia._';\n\nsession.data.doctorOptions = medicos;\nstaticData.sessions[phone] = session;\n\nreturn [{ json: { phone, reply: menu } }];"
+      },
+      "id": "format-doctors",
+      "name": "Formatear Médicos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado AWAITING_DOCTOR\nconst { phone, text, sessionData } = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst session = staticData.sessions[phone];\n\nconst options = sessionData.doctorOptions || [];\n\nlet selected = null;\nconst num = parseInt(text);\nif (!isNaN(num) && num >= 1 && num <= options.length) {\n  selected = options[num - 1];\n} else {\n  selected = options.find(o => o.mednam.toLowerCase().includes(text.toLowerCase()));\n}\n\nif (!selected) {\n  return [{ json: {\n    phone,\n    reply: '❓ No encontré ese médico. Por favor, elige uno de la lista con su número.'\n  }}];\n}\n\nsession.data.medcod = selected.medcod;\nsession.data.mednam = selected.mednam;\nsession.state = 'AWAITING_AVAILABLE_DATE';\nsession.data.history = [...(sessionData.history || []), 'AWAITING_AVAILABLE_DATE'];\nstaticData.sessions[phone] = session;\n\nconst today = new Date();\nconst todayStr = today.getFullYear().toString() +\n  String(today.getMonth()+1).padStart(2,'0') +\n  String(today.getDate()).padStart(2,'0');\n\nreturn [{ json: {\n  phone,\n  siscod: sessionData.siscod,\n  sercod: sessionData.sercod,\n  medcod: selected.medcod,\n  mednam: selected.mednam,\n  fecha: todayStr,\n  sessionData: session.data\n}}];"
+      },
+      "id": "state-doctor",
+      "name": "AWAITING_DOCTOR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 500]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOLCLI_API_URL }}/ListaCuposDisponibles",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"siscod\": \"{{ $json.siscod }}\",\n  \"sercod\": \"{{ $json.sercod }}\",\n  \"medcod\": \"{{ $json.medcod }}\",\n  \"fecha\": \"{{ $json.fecha }}\"\n}",
+        "options": {}
+      },
+      "id": "list-dates",
+      "name": "Listar Fechas Disponibles",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Formatear fechas disponibles\nconst response = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst docNode = $('AWAITING_DOCTOR').first().json;\nconst phone = docNode.phone;\nconst session = staticData.sessions[phone];\n\nconst cupos = response.cupos || [];\n\nif (cupos.length === 0) {\n  session.state = 'AWAITING_DOCTOR';\n  staticData.sessions[phone] = session;\n  return [{ json: {\n    phone,\n    reply: `😔 El Dr(a). *${docNode.mednam}* no tiene fechas disponibles por el momento.\\n\\nEscribe *retroceder* para elegir otro médico.`\n  }}];\n}\n\nconst days = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];\nconst months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];\n\nlet menu = `📅 Fechas disponibles con *Dr(a). ${docNode.mednam}*:\\n\\n`;\ncupos.forEach((c, i) => {\n  const dateStr = c.citdat;\n  const year = parseInt(dateStr.substring(0,4));\n  const month = parseInt(dateStr.substring(4,6)) - 1;\n  const day = parseInt(dateStr.substring(6,8));\n  const dateObj = new Date(year, month, day);\n  const formatted = `${days[dateObj.getDay()]}, ${day} de ${months[month]}`;\n  menu += `*${i+1}.* ${formatted}\\n`;\n});\nmenu += '\\n_Elige la fecha que más te convenga._';\n\nsession.data.dateOptions = cupos;\nstaticData.sessions[phone] = session;\n\nreturn [{ json: { phone, reply: menu } }];"
+      },
+      "id": "format-dates",
+      "name": "Formatear Fechas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado AWAITING_AVAILABLE_DATE\nconst { phone, text, sessionData } = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst session = staticData.sessions[phone];\n\nconst options = sessionData.dateOptions || [];\n\nconst num = parseInt(text);\nif (isNaN(num) || num < 1 || num > options.length) {\n  return [{ json: {\n    phone,\n    reply: '❓ Por favor, escribe solo el *número* de la fecha que prefieres.'\n  }}];\n}\n\nconst selected = options[num - 1];\nconst dateStr = selected.citdat;\nconst year = parseInt(dateStr.substring(0,4));\nconst month = parseInt(dateStr.substring(4,6)) - 1;\nconst day = parseInt(dateStr.substring(6,8));\nconst dateObj = new Date(year, month, day);\nconst days = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];\nconst months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];\nconst dateFormatted = `${days[dateObj.getDay()]}, ${day} de ${months[month]}`;\n\nsession.data.fecha_api = selected.citdat;\nsession.data.fecha_user = dateFormatted;\nsession.state = 'AWAITING_TIME';\nsession.data.history = [...(sessionData.history || []), 'AWAITING_TIME'];\nstaticData.sessions[phone] = session;\n\nreturn [{ json: {\n  phone,\n  siscod: sessionData.siscod,\n  sercod: sessionData.sercod,\n  medcod: sessionData.medcod,\n  fecha_api: selected.citdat,\n  fecha_user: dateFormatted,\n  sessionData: session.data\n}}];"
+      },
+      "id": "state-date",
+      "name": "AWAITING_AVAILABLE_DATE",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOLCLI_API_URL }}/ListaCuposDetalle",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"siscod\": \"{{ $json.siscod }}\",\n  \"sercod\": \"{{ $json.sercod }}\",\n  \"medcod\": \"{{ $json.medcod }}\",\n  \"fecha\": \"{{ $json.fecha_api }}\"\n}",
+        "options": {}
+      },
+      "id": "list-times",
+      "name": "Listar Horarios",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Formatear horarios disponibles\nconst response = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst dateNode = $('AWAITING_AVAILABLE_DATE').first().json;\nconst phone = dateNode.phone;\nconst session = staticData.sessions[phone];\n\nconst horarios = response.horarios || [];\n\nif (horarios.length === 0) {\n  session.state = 'AWAITING_AVAILABLE_DATE';\n  staticData.sessions[phone] = session;\n  return [{ json: {\n    phone,\n    reply: `😔 No hay horarios disponibles para *${dateNode.fecha_user}*.\\n\\nEscribe *retroceder* para elegir otra fecha.`\n  }}];\n}\n\nlet menu = `⏰ Horarios disponibles para el *${dateNode.fecha_user}*:\\n\\n`;\nhorarios.forEach((h, i) => {\n  const timeStr = h.hora;\n  const hours = parseInt(timeStr.substring(0,2));\n  const mins = timeStr.substring(2,4);\n  const ampm = hours >= 12 ? 'PM' : 'AM';\n  const hours12 = hours % 12 || 12;\n  menu += `*${i+1}.* ${hours12}:${mins} ${ampm}\\n`;\n});\nmenu += '\\n_¡Ya casi terminamos! Elige tu hora preferida._';\n\nsession.data.timeOptions = horarios;\nstaticData.sessions[phone] = session;\n\nreturn [{ json: { phone, reply: menu } }];"
+      },
+      "id": "format-times",
+      "name": "Formatear Horarios",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado AWAITING_TIME\nconst { phone, text, sessionData } = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst session = staticData.sessions[phone];\n\nconst options = sessionData.timeOptions || [];\nconst num = parseInt(text);\n\nif (isNaN(num) || num < 1 || num > options.length) {\n  return [{ json: {\n    phone,\n    reply: '⏰ Por favor, escribe solo el *número* del horario que prefieres.'\n  }}];\n}\n\nconst selected = options[num - 1];\nconst timeStr = selected.hora;\nconst hours = parseInt(timeStr.substring(0,2));\nconst mins = timeStr.substring(2,4);\nconst ampm = hours >= 12 ? 'PM' : 'AM';\nconst hours12 = hours % 12 || 12;\nconst timeFormatted = `${hours12}:${mins} ${ampm}`;\n\nsession.data.hora_api = selected.hora;\nsession.data.hora_user = timeFormatted;\nsession.state = 'AWAITING_APPOINTMENT_TYPE';\nsession.data.history = [...(sessionData.history || []), 'AWAITING_APPOINTMENT_TYPE'];\nstaticData.sessions[phone] = session;\n\nreturn [{ json: {\n  phone,\n  hora_user: timeFormatted,\n  sessionData: session.data,\n  reply: `✅ Anotado, a las *${timeFormatted}*.\\n\\n¿La consulta será *Presencial* o *Virtual*?\\n\\n*1.* 🏥 Presencial\\n*2.* 💻 Virtual`\n}}];"
+      },
+      "id": "state-time",
+      "name": "AWAITING_TIME",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 700]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado AWAITING_APPOINTMENT_TYPE\nconst { phone, text, sessionData } = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst session = staticData.sessions[phone];\n\nconst textLow = text.toLowerCase();\nlet cittip = null;\nlet cittipName = null;\n\nif (text === '1' || textLow.includes('presencial')) {\n  cittip = 'P'; cittipName = 'Presencial';\n} else if (text === '2' || textLow.includes('virtual')) {\n  cittip = 'V'; cittipName = 'Virtual';\n}\n\nif (!cittip) {\n  return [{ json: {\n    phone,\n    reply: '❓ Por favor, escribe *1* para Presencial o *2* para Virtual.'\n  }}];\n}\n\nsession.data.cittip = cittip;\nsession.data.cittip_name = cittipName;\nsession.state = 'AWAITING_CONFIRMATION';\nsession.data.history = [...(sessionData.history || []), 'AWAITING_CONFIRMATION'];\nstaticData.sessions[phone] = session;\n\n// Mostrar resumen\nconst d = session.data;\nconst summary = `✨ *Resumen de tu cita:*\\n\\n` +\n  `🏥 *Sede:* ${d.establishment_name}\\n` +\n  `🩺 *Especialidad:* ${d.sernam}\\n` +\n  `👨‍⚕️ *Médico:* Dr(a). ${d.mednam}\\n` +\n  `🗓️ *Fecha:* ${d.fecha_user}\\n` +\n  `⏰ *Hora:* ${d.hora_user}\\n` +\n  `📍 *Modalidad:* ${cittipName}\\n\\n` +\n  `¿Todo está correcto? Escribe *Sí* para confirmar o *retroceder* para corregir algo.`;\n\nreturn [{ json: { phone, reply: summary } }];"
+      },
+      "id": "state-apt-type",
+      "name": "AWAITING_APPOINTMENT_TYPE",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 800]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado AWAITING_CONFIRMATION\nconst { phone, text, sessionData } = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst session = staticData.sessions[phone];\n\nconst textLow = text.toLowerCase();\n\nif (!['sí', 'si', 'yes', 'confirmar', 'confirmo'].includes(textLow)) {\n  return [{ json: {\n    phone,\n    reply: '🤔 Escribe *Sí* para confirmar tu cita, *retroceder* para corregir algo, o *salir* para cancelar.'\n  }}];\n}\n\n// Proceder a registrar la cita\nsession.state = 'PROCESSING_BOOKING';\nstaticData.sessions[phone] = session;\n\nconst d = session.data;\nconst fecha_api = d.fecha_api;\nconst hora_api = d.hora_api;\nconst year = fecha_api.substring(0,4);\nconst month = fecha_api.substring(4,6);\nconst day = fecha_api.substring(6,8);\nconst hours = hora_api.substring(0,2);\nconst mins = hora_api.substring(2,4);\nconst fecref = `${day}-${month}-${year} ${hours}:${mins}`;\n\nreturn [{ json: {\n  phone,\n  confirmed: true,\n  fecref,\n  siscod: parseInt(d.siscod),\n  medcod: d.medcod,\n  sercod: d.sercod,\n  pachis: d.pachis,\n  cittip: d.cittip,\n  sessionData: session.data\n}}];"
+      },
+      "id": "state-confirmation",
+      "name": "AWAITING_CONFIRMATION",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 900]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LOLCLI_API_URL }}/RegistroCita",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"siscod\": {{ $json.siscod }},\n  \"medcod\": \"{{ $json.medcod }}\",\n  \"sercod\": \"{{ $json.sercod }}\",\n  \"fecref\": \"{{ $json.fecref }}\",\n  \"pachis\": \"{{ $json.pachis }}\",\n  \"cittip\": \"{{ $json.cittip }}\",\n  \"tarcod\": \"001\",\n  \"totnet\": 0.0,\n  \"totimp\": 0.0,\n  \"seccit\": 0,\n  \"prgori\": \"QU\",\n  \"plnnum\": \"161003\"\n}",
+        "options": {}
+      },
+      "id": "register-appointment",
+      "name": "Registrar Cita LOLCLI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1200, 900]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Procesar resultado del registro de cita\nconst response = $input.first().json;\nconst staticData = $getWorkflowStaticData('global');\nconst confNode = $('AWAITING_CONFIRMATION').first().json;\nconst phone = confNode.phone;\nconst session = staticData.sessions[phone];\n\nif (response.status === 'success') {\n  session.data.invnum_cita = response.invnum;\n  session.data.prfnum_cita = response.prfnum;\n  session.state = 'AWAITING_PAYMENT_CONFIRMATION';\n  staticData.sessions[phone] = session;\n\n  const d = session.data;\n  const successMsg = `🎉 *¡Tu cita ha sido registrada exitosamente!*\\n\\n` +\n    `📋 *N° de Reserva:* ${response.invnum}\\n` +\n    `👨‍⚕️ *Médico:* Dr(a). ${d.mednam}\\n` +\n    `🗓️ *Fecha:* ${d.fecha_user}\\n` +\n    `⏰ *Hora:* ${d.hora_user}\\n\\n` +\n    `💳 En breve recibirás el enlace de pago para completar tu reserva.\\n\\n` +\n    `¡Gracias por elegir *LOLIMSA*! 😊`;\n\n  return [{ json: { phone, reply: successMsg, success: true, invnum: response.invnum } }];\n} else {\n  const errorMsg = response.message || 'Error desconocido';\n  delete staticData.sessions[phone];\n  return [{ json: {\n    phone,\n    reply: `😔 Lo sentimos, no pudimos registrar tu cita: *${errorMsg}*\\n\\nPor favor, escribe *salir* e inténtalo de nuevo o llámanos directamente.`,\n    success: false\n  }}];\n}"
+      },
+      "id": "process-booking",
+      "name": "Procesar Resultado Cita",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 900]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado COMMAND_EXIT\nconst { phone } = $input.first().json;\nreturn [{ json: {\n  phone,\n  reply: '👋 ¡Entendido! Hemos cancelado el proceso.\\n\\nCuando quieras agendar una cita, solo escríbenos y con gusto te ayudaremos. 😊'\n}}];"
+      },
+      "id": "state-exit",
+      "name": "COMMAND_EXIT",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 1000]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estado por defecto / no reconocido\nconst { phone, state } = $input.first().json;\nreturn [{ json: {\n  phone,\n  reply: '🤔 No entendí tu mensaje.\\n\\nSi deseas agendar una cita, escribe *hola* para comenzar.\\nSi estás en proceso, escribe el *número* de tu elección.\\nPara cancelar escribe *salir*.'\n}}];"
+      },
+      "id": "state-default",
+      "name": "Estado por defecto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 1100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://whatsapp_evolutionapi:8080/message/sendText/{{ $env.EVOLUTION_INSTANCE_NAME }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"number\": \"{{ $json.phone }}\",\n  \"text\": \"{{ $json.reply }}\"\n}",
+        "options": {}
+      },
+      "id": "send-whatsapp",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2200, 600]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"ok\" }",
+        "options": { "responseCode": 200 }
+      },
+      "id": "respond-webhook",
+      "name": "Responder 200 OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2400, 600]
+    }
+  ],
+  "connections": {
+    "Webhook (Recibe WhatsApp)": { "main": [[{ "node": "Extraer datos", "type": "main", "index": 0 }]] },
+    "Extraer datos": { "main": [[{ "node": "¿Mensaje válido?", "type": "main", "index": 0 }]] },
+    "¿Mensaje válido?": {
+      "main": [
+        [{ "node": "Obtener Sesión", "type": "main", "index": 0 }],
+        [{ "node": "Responder 200 OK", "type": "main", "index": 0 }]
+      ]
+    },
+    "Obtener Sesión": { "main": [[{ "node": "Switch por Estado", "type": "main", "index": 0 }]] },
+    "Switch por Estado": {
+      "main": [
+        [{ "node": "START", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_DOC_TYPE", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_DOC_NUMBER", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_ESTABLISHMENT", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_SPECIALTY", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_DOCTOR", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_AVAILABLE_DATE", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_TIME", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_APPOINTMENT_TYPE", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_CONFIRMATION", "type": "main", "index": 0 }],
+        [{ "node": "AWAITING_PAYMENT_CONFIRMATION", "type": "main", "index": 0 }],
+        [{ "node": "COMMAND_EXIT", "type": "main", "index": 0 }]
+      ],
+      "extra": [{ "node": "Estado por defecto", "type": "main", "index": 0 }]
+    },
+    "START": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "AWAITING_DOC_TYPE": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "AWAITING_DOC_NUMBER": { "main": [[{ "node": "Validar Paciente LOLCLI", "type": "main", "index": 0 }]] },
+    "Validar Paciente LOLCLI": { "main": [[{ "node": "Procesar Paciente", "type": "main", "index": 0 }]] },
+    "Procesar Paciente": { "main": [[{ "node": "¿Paciente existe?", "type": "main", "index": 0 }]] },
+    "¿Paciente existe?": {
+      "main": [
+        [{ "node": "Listar Establecimientos", "type": "main", "index": 0 }],
+        [{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]
+      ]
+    },
+    "Listar Establecimientos": { "main": [[{ "node": "Formatear Establecimientos", "type": "main", "index": 0 }]] },
+    "Formatear Establecimientos": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "AWAITING_ESTABLISHMENT": { "main": [[{ "node": "Listar Especialidades", "type": "main", "index": 0 }]] },
+    "Listar Especialidades": { "main": [[{ "node": "Formatear Especialidades", "type": "main", "index": 0 }]] },
+    "Formatear Especialidades": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "AWAITING_SPECIALTY": { "main": [[{ "node": "Listar Médicos", "type": "main", "index": 0 }]] },
+    "Listar Médicos": { "main": [[{ "node": "Formatear Médicos", "type": "main", "index": 0 }]] },
+    "Formatear Médicos": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "AWAITING_DOCTOR": { "main": [[{ "node": "Listar Fechas Disponibles", "type": "main", "index": 0 }]] },
+    "Listar Fechas Disponibles": { "main": [[{ "node": "Formatear Fechas", "type": "main", "index": 0 }]] },
+    "Formatear Fechas": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "AWAITING_AVAILABLE_DATE": { "main": [[{ "node": "Listar Horarios", "type": "main", "index": 0 }]] },
+    "Listar Horarios": { "main": [[{ "node": "Formatear Horarios", "type": "main", "index": 0 }]] },
+    "Formatear Horarios": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "AWAITING_TIME": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "AWAITING_APPOINTMENT_TYPE": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "AWAITING_CONFIRMATION": { "main": [[{ "node": "Registrar Cita LOLCLI", "type": "main", "index": 0 }]] },
+    "Registrar Cita LOLCLI": { "main": [[{ "node": "Procesar Resultado Cita", "type": "main", "index": 0 }]] },
+    "Procesar Resultado Cita": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "COMMAND_EXIT": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "Estado por defecto": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "Enviar WhatsApp": { "main": [[{ "node": "Responder 200 OK", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["whatsapp", "lolimsa", "appointments"]
+}
