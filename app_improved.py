@@ -2014,20 +2014,13 @@ def webhook_handler():
     return jsonify({"status": "processed"})
 
 
+preload_global_lists()
+cleanup_thread = threading.Thread(target=session_cleanup_task, daemon=True)
+cleanup_thread.start()
+reminder_thread = threading.Thread(target=reminder_task, daemon=True)
+reminder_thread.start()
+
 if __name__ == "__main__":
-    print("Iniciando el servidor del chatbot...")
-    preload_global_lists()
-
-    print("Iniciando el vigilante de sesiones inactivas...")
-    cleanup_thread = threading.Thread(target=session_cleanup_task, daemon=True)
-    cleanup_thread.start()
-
-    print("Iniciando el vigilante de recordatorios...")
-    reminder_thread = threading.Thread(target=reminder_task, daemon=True)
-    reminder_thread.start()
-
     from waitress import serve
-
-    # fix
     port = int(os.getenv("PORT", 5001))
     serve(app, host="0.0.0.0", port=port)
