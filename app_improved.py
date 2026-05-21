@@ -795,15 +795,10 @@ def webhook_handler():
             send_whatsapp_message(phone_to_reply, reply)
 
         elif choice in ["3", "reprogramar", "cambiar cita"]:
-            reply, opts = format_menu(
-                "Para reprogramar tu cita, selecciona tu tipo de documento:",
-                lista_documentos_global,
-                "tidcod",
-                "tiddes",
-            )
-            session["options"] = opts
-            session["state"] = "AWAITING_DOC_TYPE_FOR_RESCHEDULE"
-            send_whatsapp_message(phone_to_reply, reply)
+            session["tidcod"] = "03"
+            session["tiddes"] = "D.N.I."
+            session["state"] = "AWAITING_DOC_NUMBER_FOR_RESCHEDULE"
+            send_whatsapp_message(phone_to_reply, "🔄 Para reprogramar tu cita, ingresa tu número de D.N.I.")
 
         elif choice in ["4", "pagar", "pago pendiente"]:
             reply, opts = format_menu(
@@ -844,7 +839,7 @@ def webhook_handler():
         doc_number = message_text.strip()
         tidcod = session.get("tidcod")
 
-        if tidcod == "01" and (not doc_number.isdigit() or len(doc_number) != 8):
+        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
             send_whatsapp_message(
                 phone_to_reply,
                 "⚠️ El DNI debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏",
@@ -972,7 +967,7 @@ def webhook_handler():
         doc_number = message_text.strip()
         tidcod = session.get("tidcod")
 
-        if tidcod == "01" and (not doc_number.isdigit() or len(doc_number) != 8):
+        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
             send_whatsapp_message(
                 phone_to_reply,
                 "⚠️ El DNI ingresado no es válido. Debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏",
@@ -1695,7 +1690,7 @@ def webhook_handler():
     elif state == "AWAITING_DOC_NUMBER_FOR_CONSULT":
         doc_number = message_text.strip()
         tidcod = session.get("tidcod")
-        if tidcod == "01" and (not doc_number.isdigit() or len(doc_number) != 8):
+        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
             send_whatsapp_message(
                 phone_to_reply, "⚠️ El DNI debe tener exactamente 8 dígitos numéricos."
             )
@@ -1774,7 +1769,7 @@ def webhook_handler():
     elif state == "AWAITING_DOC_NUMBER_FOR_RESCHEDULE":
         doc_number = message_text.strip()
         tidcod = session.get("tidcod")
-        if tidcod == "01" and (not doc_number.isdigit() or len(doc_number) != 8):
+        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
             send_whatsapp_message(
                 phone_to_reply, "⚠️ El DNI debe tener exactamente 8 dígitos numéricos."
             )
