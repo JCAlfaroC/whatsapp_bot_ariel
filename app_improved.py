@@ -622,20 +622,19 @@ def format_appointments_list(citas, title):
     formatted = []
     for i, cita in enumerate(citas, 1):
         try:
-            date_obj = datetime.strptime(cita.get("citdat", ""), "%Y%m%d")
+            date_obj = datetime.strptime(cita.get("fecha", ""), "%Y%m%d")
             fecha = date_obj.strftime("%A, %d de %B").capitalize()
         except (ValueError, TypeError):
-            fecha = cita.get("citdat", "Fecha no disponible")
-        hora_raw = cita.get("cithora", "")
+            fecha = cita.get("fecha", "Fecha no disponible")
+        hora_raw = cita.get("hora", "")
         try:
             hora = datetime.strptime(hora_raw, "%H%M").strftime("%I:%M %p")
         except (ValueError, TypeError):
             hora = hora_raw or "Hora no disponible"
         msg += (
             f"*{i}.* 🗓️ {fecha} — ⏰ {hora}\n"
-            f"   🏥 {cita.get('sisent', '')}\n"
-            f"   🩺 {cita.get('serdes', '')}\n"
-            f"   👨‍⚕️ {cita.get('mednam', '')}\n\n"
+            f"   🩺 {cita.get('servicio', '')}\n"
+            f"   👨‍⚕️ {cita.get('medico', '')}\n\n"
         )
         formatted.append({"id": i, "data": cita})
     return msg, formatted
@@ -1683,8 +1682,8 @@ def webhook_handler():
             # TODO: Replace "ListaCitasPaciente" with the confirmed endpoint name
             citas = (
                 requests.post(
-                    f"{LOLCLI_API_URL}/ListaCitasPaciente",
-                    json={"pachis": paciente["pachis"]},
+                    f"{LOLCLI_API_URL}/ListaCitasPacientes",
+                    json={"nro_documento": doc_number},
                     headers=lolcli_headers,
                 )
                 .json()
@@ -1763,8 +1762,8 @@ def webhook_handler():
             # TODO: Replace "ListaCitasPaciente" with the confirmed endpoint name
             citas = (
                 requests.post(
-                    f"{LOLCLI_API_URL}/ListaCitasPaciente",
-                    json={"pachis": paciente["pachis"]},
+                    f"{LOLCLI_API_URL}/ListaCitasPacientes",
+                    json={"nro_documento": doc_number},
                     headers=lolcli_headers,
                 )
                 .json()
@@ -1792,13 +1791,13 @@ def webhook_handler():
     elif state == "AWAITING_APPOINTMENT_TO_RESCHEDULE":
         selected_option = process_user_choice(message_text, session.get("options", []))
         if selected_option:
-            session["citid_to_reschedule"] = selected_option.get("citid")
-            session["siscod"] = selected_option.get("siscod")
+            session["citid_to_reschedule"] = selected_option.get("secuencia")
+            session["siscod"] = os.getenv("LOLCLI_ENTIDAD", "000000001")
             session["sercod"] = selected_option.get("sercod")
             session["medcod"] = selected_option.get("medcod")
-            session["mednam"] = selected_option.get("mednam", "")
-            session["sernam"] = selected_option.get("serdes", "")
-            session["establishment_name"] = selected_option.get("sisent", "")
+            session["mednam"] = selected_option.get("medico", "")
+            session["sernam"] = selected_option.get("servicio", "")
+            session["establishment_name"] = ""
             session["cittip"] = selected_option.get("cittip", "P")
             session["tarcod"] = selected_option.get("tarcod", "")
             send_whatsapp_message(
@@ -1917,36 +1916,27 @@ def webhook_handler():
                     phone_to_reply, "⏳ Procesando el cambio de tu cita, un momento..."
                 )
                 # TODO: Replace "AnularCita" with the confirmed endpoint name
-                anular_resp = requests.post(
-                    f"{LOLCLI_API_URL}/AnularCita",
-                    json={"citid": session["citid_to_reschedule"]},
-                    headers=lolcli_headers,
-                )
-                if not anular_resp.ok:
-                    raise Exception(f"AnularCita falló: {anular_resp.text}")
                 fecref_str = datetime.strptime(
                     session["new_fecha_api"] + session["new_hora_api"], "%Y%m%d%H%M"
                 ).strftime("%d-%m-%Y %H:%M")
-                payload_cita = {
-                    "siscod": int(session["siscod"]),
-                    "medcod": session["medcod"],
-                    "sercod": session["sercod"],
-                    "fecref": fecref_str,
-                    "pachis": session["pachis"],
-                    "cittip": session.get("cittip", "P"),
-                    "tarcod": session.get("tarcod", ""),
-                    "totnet": 0.0,
-                    "totimp": 0.0,
-                    "seccit": 0,
-                    "prgori": "QU",
-                    "plnnum": "161003",
+
+                payload_actualizar = {
+                    "xxinvnum": int(session["citid_to_reschedule"]),
+                    "xxmedcod": session["medcod"],
+                    "xxsercod": session["sercod"],
+                    "xxfecref": fecref_str,
+                    "xxcittip": session.get("cittip", "P"),
                 }
-                nueva_cita = requests.post(
-                    f"{LOLCLI_API_URL}/RegistroCita",
-                    json=payload_cita,
+                if session.get("cittip") == "V" and session.get("zoom_link"):
+                    payload_actualizar["xxcitzoomlink"] = session["zoom_link"]
+
+                resp = requests.post(
+                    f"{LOLCLI_API_URL}/ActualizarCitaProtocolo",
+                    json=payload_actualizar,
                     headers=lolcli_headers,
-                ).json()
-                if nueva_cita.get("status") == "success":
+                )
+                result = resp.json()
+                if resp.ok and result.get("status") == "success":
                     send_whatsapp_message(
                         phone_to_reply,
                         f"✅ ¡Tu cita ha sido reprogramada exitosamente!\n\n"
@@ -1958,8 +1948,11 @@ def webhook_handler():
                     return jsonify({"status": "rescheduled"})
                 else:
                     raise Exception(
-                        f"RegistroCita falló: {nueva_cita.get('message', 'error desconocido')}"
+                        result.get(
+                            "xxmessage", result.get("message", "error desconocido")
+                        )
                     )
+
             except Exception as e:
                 print(f"ERROR en AWAITING_RESCHEDULE_CONFIRMATION: {e}")
                 send_whatsapp_message(
