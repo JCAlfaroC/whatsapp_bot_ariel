@@ -29,6 +29,10 @@ except (locale.Error, Exception):  # reads .env file
 # --- Configuración de la Aplicación ---
 load_dotenv()
 app = Flask(__name__)
+@app.route("/test, methods=["GET"]")
+def test():
+    return "OK", 200
+
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")  # wahtsapp gateway
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
