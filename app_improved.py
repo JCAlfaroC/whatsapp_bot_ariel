@@ -1,14 +1,15 @@
 # --- app.py (Versión final con formato de fecha AAAA-MM-DD y flujo simplificado) ---
 
-#from doctest import NORMALIZE_WHITESPACE
+# from doctest import NORMALIZE_WHITESPACE
+import json
 import locale
 import os
 import re
-#from smtplib import SMTP_PORT
+
+# from smtplib import SMTP_PORT
 import threading
 import time
 import unicodedata
-import json
 from datetime import date, datetime, timedelta
 
 import requests
@@ -122,24 +123,25 @@ def session_cleanup_task():
                 )
                 session["reminder_sent"] = True
 
+
 def send_mail_reminder(reminder):
     import smtplib
-    from email.mime.text import MIMEText
     from email.mime.miltipart import MIMEMultipart
+    from email.mime.text import MIMEText
 
-    smtp_server     = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
-    smtp_port       = int(os.getenv("EMAIL_SMTP_PORT", 587))
-    smtp_user       = os.getenv("EMAIL_USER")
-    smtp_password   = os.getenv("EMAIL_PASSWORD")
+    smtp_server = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("EMAIL_SMTP_PORT", 587))
+    smtp_user = os.getenv("EMAIL_USER")
+    smtp_password = os.getenv("EMAIL_PASSWORD")
 
     if not smtp_user or not smtp_password:
         print("ADVERTENCIA: Credenciales de email no configuradas")
         return
 
     msg = MIMEMultipart()
-    msg["From"]     = smtp_user
-    msg["To"]       = reminder["email"]
-    msg["Subject"]  = "Recordatorio de tu cita mėdica - LOLIMSA"
+    msg["From"] = smtp_user
+    msg["To"] = reminder["email"]
+    msg["Subject"] = "Recordatorio de tu cita mėdica - LOLIMSA"
 
     body = (
         f"Estimado/a {reminder['patient_name']}, \n\n"
@@ -160,27 +162,30 @@ def send_mail_reminder(reminder):
         server.login(smtp_user, smtp_password)
         server.sendmail(smtp_user, reminder["email"], msg.as_string())
         server.quit()
-        print(f"INFO: Email de recordatorio enviado a {reminder['email]}")
+        print(f"INFO: Email de recordatorio enviado a {reminder['email']}")
     except Exception as e:
         print(f"ERROR al enviar email de recordatorio: {e}")
 
+
 def save_reminder(session):
-    fecha   = session.get("fecha_api", "")
-    hora    = session.get("hora_api", "")
+    fecha = session.get("fecha_api", "")
+    hora = session.get("hora_api", "")
     try:
-        apt_datetime = datetime.strptime(fecha + hora, "%Y%m%d%H%M").strftime("%Y-%m-%d %H:%M")
+        apt_datetime = datetime.strptime(fecha + hora, "%Y%m%d%H%M").strftime(
+            "%Y-%m-%d %H:%M"
+        )
     except (ValueError, TypeError):
         apt_datetime = "Fecha no disponible"
 
     reminder = {
-        "phone":                session.get("sender"),
-        "email":                session.get("email"),
-        "patient_name":         session.get("paciente_nombre", "Paciente"),
-        "doctor_name":          session.get("mednam", ""),
-        "specialty":           session.get("sernam", ""),
-        "sede":                 session.get("establishment_name", ""),
+        "phone": session.get("sender"),
+        "email": session.get("email"),
+        "patient_name": session.get("paciente_nombre", "Paciente"),
+        "doctor_name": session.get("mednam", ""),
+        "specialty": session.get("sernam", ""),
+        "sede": session.get("establishment_name", ""),
         "appointment_datetime": apt_datetime,
-        "reminded":             False,
+        "reminded": False,
     }
 
     reminders = []
@@ -194,11 +199,14 @@ def save_reminder(session):
     reminders.append(reminder)
     with open("reminders.json", "w") as f:
         json.dump(reminders, f, ensure_ascii=False, indent=2)
-    print(f"INFO: Recordatorio guardado para {reminder['patient_name']} -- {apt_datetime}")
+    print(
+        f"INFO: Recordatorio guardado para {reminder['patient_name']} -- {apt_datetime}"
+    )
+
 
 def reminder_task():
     while True:
-        time.sleep(3600)    # check every hour
+        time.sleep(3600)  # check every hour
         now = datetime.now()
 
         if not os.path.exists("reminders.json"):
@@ -214,7 +222,9 @@ def reminder_task():
             if reminder.get("reminded"):
                 continue
             try:
-                apt_dt = datetime.strptime(reminder["appointment_datetime"], "%Y-%m-%d %H:%M")
+                apt_dt = datetime.strptime(
+                    reminder["appointment_datetime"], "%Y-%m-%d %H:%M"
+                )
             except (ValueError, TypeError):
                 continue
 
@@ -237,6 +247,7 @@ def reminder_task():
         if updated:
             with open("reminders.json", "w") as f:
                 json.dump(reminders, f, ensure_ascii=False, indent=2)
+
 
 def preload_global_lists():
     global lista_sedes_global, lista_documentos_global
