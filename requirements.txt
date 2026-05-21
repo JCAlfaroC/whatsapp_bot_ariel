@@ -4,3 +4,4 @@ python-dotenv
 thefuzz
 python-levenshtein
 waitress
+gunicorn

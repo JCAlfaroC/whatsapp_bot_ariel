@@ -1,1 +1,1 @@
-web: python app_improved.py
+web: gunicorn app_improved:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
