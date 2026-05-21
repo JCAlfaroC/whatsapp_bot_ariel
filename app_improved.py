@@ -1,11 +1,14 @@
 # --- app.py (Versión final con formato de fecha AAAA-MM-DD y flujo simplificado) ---
 
+#from doctest import NORMALIZE_WHITESPACE
 import locale
 import os
 import re
+#from smtplib import SMTP_PORT
 import threading
 import time
 import unicodedata
+import json
 from datetime import date, datetime, timedelta
 
 import requests
@@ -119,6 +122,121 @@ def session_cleanup_task():
                 )
                 session["reminder_sent"] = True
 
+def send_mail_reminder(reminder):
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.miltipart import MIMEMultipart
+
+    smtp_server     = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+    smtp_port       = int(os.getenv("EMAIL_SMTP_PORT", 587))
+    smtp_user       = os.getenv("EMAIL_USER")
+    smtp_password   = os.getenv("EMAIL_PASSWORD")
+
+    if not smtp_user or not smtp_password:
+        print("ADVERTENCIA: Credenciales de email no configuradas")
+        return
+
+    msg = MIMEMultipart()
+    msg["From"]     = smtp_user
+    msg["To"]       = reminder["email"]
+    msg["Subject"]  = "Recordatorio de tu cita mėdica - LOLIMSA"
+
+    body = (
+        f"Estimado/a {reminder['patient_name']}, \n\n"
+        f"Le recordamos que tiene una cita programada para mañana:\n\n"
+        f" 👨‍⚕️ Mėdico:          {reminder['doctor_name']}\n"
+        f" 🩺 Especialidad:    {reminder['speciality']}\n"
+        f" 🏥 Sede:            {reminder['sede']}\n"
+        f" 🗓️ Fecha y hora     {reminder['appointment_datetime']}\n\n"
+        f"Por favor, presėntese 15 minutos antes.\n\n"
+        f"Saludos,\nLOLIMSA"
+    )
+
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_user, reminder["email"], msg.as_string())
+        server.quit()
+        print(f"INFO: Email de recordatorio enviado a {reminder['email]}")
+    except Exception as e:
+        print(f"ERROR al enviar email de recordatorio: {e}")
+
+def save_reminder(session):
+    fecha   = session.get("fecha_api", "")
+    hora    = session.get("hora_api", "")
+    try:
+        apt_datetime = datetime.strptime(fecha + hora, "%Y%m%d%H%M").strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        apt_datetime = "Fecha no disponible"
+
+    reminder = {
+        "phone":                session.get("sender"),
+        "email":                session.get("email"),
+        "patient_name":         session.get("paciente_nombre", "Paciente"),
+        "doctor_name":          session.get("mednam", ""),
+        "specialty":           session.get("sernam", ""),
+        "sede":                 session.get("establishment_name", ""),
+        "appointment_datetime": apt_datetime,
+        "reminded":             False,
+    }
+
+    reminders = []
+    if os.path.exists("reminders.json"):
+        try:
+            with open("reminders.json", "r") as f:
+                reminders = json.load(f)
+        except Exception:
+            reminders = []
+
+    reminders.append(reminder)
+    with open("reminders.json", "w") as f:
+        json.dump(reminders, f, ensure_ascii=False, indent=2)
+    print(f"INFO: Recordatorio guardado para {reminder['patient_name']} -- {apt_datetime}")
+
+def reminder_task():
+    while True:
+        time.sleep(3600)    # check every hour
+        now = datetime.now()
+
+        if not os.path.exists("reminders.json"):
+            continue
+        try:
+            with open("reminders.json", "r") as f:
+                reminders = json.load(f)
+        except Exception:
+            continue
+
+        updated = False
+        for reminder in reminders:
+            if reminder.get("reminded"):
+                continue
+            try:
+                apt_dt = datetime.strptime(reminder["appointment_datetime"], "%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                continue
+
+            hours_until = (apt_dt - now).total_seconds() / 3600
+
+            if 23 <= hours_until <= 25:
+                whatsapp_msg = (
+                    f"🔔 *Recordatorio de cita -- LOLIMSA*\n\n"
+                    f"Hola {reminder['patient_name']}, le recordamos su cita de mañana:\n\n"
+                    f"👨‍⚕️ *Médico:* {reminder['doctor_name']}\n"
+                    f"🩺 *Especialidad:* {reminder['specialty']}\n"
+                    f"🏥 *Sede:* {reminder['sede']}\n"
+                    f"⏰ *Hora:* {reminder['appointment_datetime']}\n"
+                    f"Por favor, preséntese 15 minutos antes. 😊"
+                )
+                send_whatsapp_message(reminder["phone"], whatsapp_msg)
+                reminder["reminded"] = True
+                updated = True
+
+        if updated:
+            with open("reminders.json", "w") as f:
+                json.dump(reminders, f, ensure_ascii=False, indent=2)
 
 def preload_global_lists():
     global lista_sedes_global, lista_documentos_global
@@ -1442,6 +1560,7 @@ def webhook_handler():
                         phone_to_reply,
                         f"¡Pago confirmado! ✅\n\nTu cita está 100% confirmada.\n\n¡Gracias por preferir LOLIMSA! Te esperamos.",
                     )
+                    save_reminder(session)
                     user_sessions.pop(sender, None)
                     return jsonify({"status": "completed_and_session_cleared"})
 
@@ -1475,6 +1594,7 @@ def webhook_handler():
                         phone_to_reply,
                         f"¡Pago confirmado! ✅\n\nTu cita está 100% confirmada.\n\n¡Gracias por preferir LOLIMSA! Te esperamos.",
                     )
+                    save_reminder(session)
                     user_sessions.pop(sender, None)
                     return jsonify({"status": "completed_and_session_cleared"})
                 else:
@@ -1853,6 +1973,12 @@ if __name__ == "__main__":
     cleanup_thread = threading.Thread(target=session_cleanup_task, daemon=True)
     cleanup_thread.start()
 
+    print("Iniciando el vigilante de recordatorios...")
+    reminder_thread = threading.Thread(target=reminder_task, daemon=True)
+    reminder_thread.start()
+
     from waitress import serve
 
-    serve(app, host="0.0.0.0", port=5001)
+    # fix
+    port = int(os.getenv("PORT", 5001))
+    serve(app, host="0.0.0.0", port=port)
