@@ -628,16 +628,53 @@ def format_appointments_list(citas, title):
     msg = f"{title}\n\n"
     formatted = []
     for i, cita in enumerate(citas, 1):
-        try:
-            date_obj = datetime.strptime(cita.get("fecha", ""), "%Y%m%d")
-            fecha = date_obj.strftime("%A, %d de %B").capitalize()
-        except (ValueError, TypeError):
-            fecha = cita.get("fecha", "Fecha no disponible")
+        fecha_raw = cita.get("fecha", "")
         hora_raw = cita.get("hora", "")
+        date_obj = None
         try:
-            hora = datetime.strptime(hora_raw, "%H%M").strftime("%I:%M %p")
+            date_obj = datetime.strptime(fecha_raw[:19], "%Y-%m-%dT%H:%M:%S")
+            DAYS_ES = [
+                "Lunes",
+                "Martes",
+                "Miércoles",
+                "Jueves",
+                "Viernes",
+                "Sábado",
+                "Domingo",
+            ]
+            MONTHS_ES = [
+                "",
+                "enero",
+                "febrero",
+                "marzo",
+                "abril",
+                "mayo",
+                "junio",
+                "julio",
+                "agosto",
+                "septiembre",
+                "octubre",
+                "noviembre",
+                "diciembre",
+            ]
+            fecha = f"{DAYS_ES[date_obj.weekday()]}, {date_obj.day:02d} de {MONTHS_ES[date_obj.month]}"
         except (ValueError, TypeError):
-            hora = hora_raw or "Hora no disponible"
+            try:
+                date_obj = datetime.strptime(fecha_raw, "%Y%m%d")
+                fecha = f"{DAYS_ES[date_obj.weekday()]}, {date_obj.day:02d} de {MONTHS_ES[date_obj.month]}"
+
+            except (ValueError, TypeError):
+                fecha = fecha_raw or "Fecha no disponible"
+        if hora_raw:
+            try:
+                hora = datetime.strptime(hora_raw, "%H%M").strftime("%H:%M")
+            except (ValueError, TypeError):
+                hora = hora_raw
+        elif date_obj and "T" in fecha_raw:
+            hora = date_obj.strftime("%H:%M")
+        else:
+            hora = "Hora no disponible"
+
         msg += (
             f"*{i}.* 🗓️ {fecha} — ⏰ {hora}\n"
             f"   🩺 {cita.get('servicio', '')}\n"
@@ -1704,6 +1741,7 @@ def webhook_handler():
                 msg, _ = format_appointments_list(
                     citas, f"📋 *Tus citas agendadas, {paciente['pacpmn']}:*"
                 )
+                msg += "_ℹ️ Para reprogramar una cita, selecciona la opción *3* en el menú principal._"
                 send_whatsapp_message(phone_to_reply, msg)
             user_sessions.pop(sender, None)
             return jsonify({"status": "consult_done"})
