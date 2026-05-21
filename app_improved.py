@@ -29,7 +29,7 @@ except (locale.Error, Exception):  # reads .env file
 # --- Configuración de la Aplicación ---
 load_dotenv()
 app = Flask(__name__)
-@app.route("/test, methods=["GET"]")
+@app.route("/test", methods=["GET"]")
 def test():
     return "OK", 200
 
