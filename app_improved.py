@@ -1776,30 +1776,9 @@ def webhook_handler():
             user_sessions[sender] = session
             return jsonify({"status": "invalid_dni"})
         try:
-            pacientes = (
-                requests.post(
-                    f"{LOLCLI_API_URL}/ValidarPaciente",
-                    json={"tidcod": tidcod, "pacdoc": doc_number},
-                    headers=lolcli_headers,
-                )
-                .json()
-                .get("paciente", [])
-            )
-            if not pacientes:
-                send_whatsapp_message(
-                    phone_to_reply,
-                    "🔍 No encontramos ningún paciente registrado con ese documento. 🙏",
-                )
-                user_sessions.pop(sender, None)
-                return jsonify({"status": "patient_not_found"})
-            paciente = pacientes[0]
-            session["pachis"] = paciente["pachis"]
-            session["paciente_nombre"] = paciente["pacpmn"]
             send_whatsapp_message(
-                phone_to_reply,
-                f"Un momento, buscando tus citas, {paciente['pacpmn']}... 🔍",
+                phone_to_reply, "Un momento, buscando tus citas... 🔍"
             )
-            # TODO: Replace "ListaCitasPaciente" with the confirmed endpoint name
             citas = (
                 requests.post(
                     f"{LOLCLI_API_URL}/ListaCitasPacientes",
