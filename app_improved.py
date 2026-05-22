@@ -1809,7 +1809,7 @@ def webhook_handler():
                 f"Buscando fechas disponibles para el Dr(a). {session['mednam']}... 📅",
             )
             today_str = date.today().strftime("%Y%m%d")
-            fechas = (
+            all_cupos = (
                 requests.post(
                     f"{LOLCLI_API_URL}/ListaCuposDisponibles",
                     json={
@@ -1823,14 +1823,24 @@ def webhook_handler():
                 .json()
                 .get("cupos", [])
             )
-            if not fechas:
+            if not all_cupos:
                 send_whatsapp_message(
                     phone_to_reply,
                     "😔 No hay fechas disponibles para ese médico en este momento. Escribe *salir* para cancelar.",
                 )
             else:
+                # Store all cupos so we can filter by date when user picks one
+                session["all_cupos"] = all_cupos
+                # Show only unique dates
+                seen = set()
+                unique_fechas = []
+                for c in all_cupos:
+                    d = c.get("citdat", "")
+                    if d and d not in seen:
+                        seen.add(d)
+                        unique_fechas.append(c)
                 reply, opts = format_menu(
-                    "📅 Elige la nueva fecha:", fechas, "citdat", "citdat"
+                    "📅 Elige la nueva fecha:", unique_fechas, "citdat", "citdat"
                 )
                 session["options"] = opts
                 session["state"] = "AWAITING_NEW_DATE_RESCHEDULE"
@@ -1851,20 +1861,11 @@ def webhook_handler():
                 phone_to_reply,
                 f"Perfecto, para el *{session['new_fecha_user']}*. Viendo horarios disponibles... ⏰",
             )
-            _payload_detalle = {
-                "siscod": session["siscod"],
-                "sercod": session["sercod"],
-                "medcod": session["medcod"],
-                "fecha": session["new_fecha_api"],
-            }
-            print(f"DEBUG ListaCuposDetalle payload: {_payload_detalle}")
-            _resp_detalle = requests.post(
-                f"{LOLCLI_API_URL}/ListaCuposDetalle",
-                json=_payload_detalle,
-                headers=lolcli_headers,
-            )
-            print(f"DEBUG ListaCuposDetalle response: {_resp_detalle.text[:500]}")
-            horarios = _resp_detalle.json().get("horarios", [])
+            # Filter cupos by the selected date to get time slots
+            horarios = [
+                c for c in session.get("all_cupos", [])
+                if c.get("citdat") == session["new_fecha_api"]
+            ]
             if not horarios:
                 send_whatsapp_message(
                     phone_to_reply,
@@ -1874,7 +1875,11 @@ def webhook_handler():
                 reply = "⏰ Horarios disponibles:\n\n"
                 opts = []
                 for i, h in enumerate(horarios, 1):
-                    hora_fmt = datetime.strptime(h["hora"], "%H%M").strftime("%I:%M %p")
+                    hora_raw = h.get("hora", "")
+                    try:
+                        hora_fmt = datetime.strptime(hora_raw, "%H%M").strftime("%H:%M")
+                    except (ValueError, TypeError):
+                        hora_fmt = hora_raw
                     reply += f"*{i}.* {hora_fmt}\n"
                     opts.append({"id": i, "data": h})
                 reply += "\n_Elige el número del horario._"
