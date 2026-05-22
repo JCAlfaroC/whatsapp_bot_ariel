@@ -1295,9 +1295,25 @@ def webhook_handler():
                 phone_to_reply,
                 f"Excelente, para el *{session['fecha_user']}*. Viendo las horas libres...",
             )
+            try:
+                horarios_raw = requests.post(
+                    f"{LOLCLI_API_URL}/ListaCuposDetalle",
+                    json={
+                        "siscod": int(session["siscod"]),
+                        "sercod": session["sercod"],
+                        "medcod": session["medcod"],
+                        "fecha": session["fecha_api"],
+                        "invnum": 0,
+                    },
+                    headers=lolcli_headers,
+                ).json().get("horarios", [])
+                horarios = [h for h in horarios_raw if h.get("estado") == "D"] or PRESET_HORARIOS
+            except Exception as e:
+                print(f"ERROR ListaCuposDetalle (schedule): {e}")
+                horarios = PRESET_HORARIOS
             reply = "⏰ Elige el horario de tu preferencia:\n\n"
             formatted_options = []
-            for i, h in enumerate(PRESET_HORARIOS, 1):
+            for i, h in enumerate(horarios, 1):
                 hora_fmt = datetime.strptime(h["hora"], "%H%M").strftime("%H:%M")
                 reply += f"*{i}.* {hora_fmt}\n"
                 formatted_options.append({"id": i, "data": h})
@@ -1857,9 +1873,25 @@ def webhook_handler():
                 phone_to_reply,
                 f"Perfecto, para el *{session['new_fecha_user']}*. Viendo horarios disponibles... ⏰",
             )
+            try:
+                horarios_raw = requests.post(
+                    f"{LOLCLI_API_URL}/ListaCuposDetalle",
+                    json={
+                        "siscod": int(session["siscod"]),
+                        "sercod": session["sercod"],
+                        "medcod": session["medcod"],
+                        "fecha": session["new_fecha_api"],
+                        "invnum": int(session["citid_to_reschedule"]),
+                    },
+                    headers=lolcli_headers,
+                ).json().get("horarios", [])
+                horarios = [h for h in horarios_raw if h.get("estado") == "D"] or PRESET_HORARIOS
+            except Exception as e:
+                print(f"ERROR ListaCuposDetalle (reschedule): {e}")
+                horarios = PRESET_HORARIOS
             reply = "⏰ Elige el nuevo horario de tu preferencia:\n\n"
             opts = []
-            for i, h in enumerate(PRESET_HORARIOS, 1):
+            for i, h in enumerate(horarios, 1):
                 hora_fmt = datetime.strptime(h["hora"], "%H%M").strftime("%H:%M")
                 reply += f"*{i}.* {hora_fmt}\n"
                 opts.append({"id": i, "data": h})
