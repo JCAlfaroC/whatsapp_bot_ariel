@@ -1252,10 +1252,18 @@ def webhook_handler():
                 json=payload,
                 headers=lolcli_headers,
             )
-            fechas_disponibles = response.json().get("cupos", [])
+            all_cupos = response.json().get("cupos", [])
+            session["all_cupos"] = all_cupos
+            seen = set()
+            unique_fechas = []
+            for c in all_cupos:
+                d = c.get("citdat", "")
+                if d and d not in seen:
+                    seen.add(d)
+                    unique_fechas.append(c)
             reply, formatted_options = format_menu(
                 "📅 Estas son sus próximas fechas disponibles:",
-                fechas_disponibles,
+                unique_fechas,
                 "citdat",
                 "citdat",
             )
@@ -1279,18 +1287,10 @@ def webhook_handler():
                 phone_to_reply,
                 f"Excelente, para el *{session['fecha_user']}*. Viendo las horas libres...",
             )
-            payload = {
-                "siscod": session["siscod"],
-                "sercod": session["sercod"],
-                "medcod": session["medcod"],
-                "fecha": session["fecha_api"],
-            }
-            response = requests.post(
-                f"{LOLCLI_API_URL}/ListaCuposDetalle",
-                json=payload,
-                headers=lolcli_headers,
-            )
-            horarios = response.json().get("horarios", [])
+            horarios = [
+                c for c in session.get("all_cupos", [])
+                if c.get("citdat") == session["fecha_api"]
+            ]
             if not horarios:
                 send_whatsapp_message(
                     phone_to_reply,
@@ -1298,12 +1298,15 @@ def webhook_handler():
                 )
                 session["history"].pop()
             else:
-                reply = f"⏰ Horarios disponibles para ese día:\n\n"
+                reply = "⏰ Horarios disponibles para ese día:\n\n"
                 formatted_options = []
                 for i, h in enumerate(horarios, 1):
-                    time_obj = datetime.strptime(h["hora"], "%H%M")
-                    hora_am_pm = time_obj.strftime("%I:%M %p")
-                    reply += f"*{i}.* {hora_am_pm}\n"
+                    hora_raw = h.get("hora", "")
+                    try:
+                        hora_fmt = datetime.strptime(hora_raw, "%H%M").strftime("%H:%M")
+                    except (ValueError, TypeError):
+                        hora_fmt = hora_raw
+                    reply += f"*{i}.* {hora_fmt}\n"
                     formatted_options.append({"id": i, "data": h})
                 reply += "\n_Elige la hora (solo el número). ¡Ya casi terminamos!_"
                 session["options"] = formatted_options
