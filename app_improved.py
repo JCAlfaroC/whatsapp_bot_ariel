@@ -42,7 +42,6 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 LOLCLI_API_URL = os.getenv("LOLCLI_API_URL")  # clinic system
 LOLCLI_ENTIDAD = os.getenv("LOLCLI_ENTIDAD")
 LOLCLI_API_TOKEN = os.getenv("LOLCLI_API_TOKEN")
-LOLCLI_USECOD = int(os.getenv("LOLCLI_USECOD", "0"))  # user ID for ActualizarCitaProtocolo — ask LOLCLI team
 DNI_API_URL = "https://my.apidev.pro/api/dni"
 DNI_API_TOKEN = os.getenv("DNI_API_TOKEN")  # RENIEC lookup
 
@@ -1946,7 +1945,8 @@ def webhook_handler():
                     "xxsercod": session["sercod"],
                     "xxfecref": fecref_str,
                     "xxcittip": session.get("cittip", "P"),
-                    "xxusecod": LOLCLI_USECOD,
+                    "usecod": 1,
+                    "usenam": "LOLIMSA",
                 }
                 if session.get("cittip") == "V" and session.get("zoom_link"):
                     payload_actualizar["xxcitzoomlink"] = session["zoom_link"]
