@@ -1851,20 +1851,20 @@ def webhook_handler():
                 phone_to_reply,
                 f"Perfecto, para el *{session['new_fecha_user']}*. Viendo horarios disponibles... ⏰",
             )
-            horarios = (
-                requests.post(
-                    f"{LOLCLI_API_URL}/ListaCuposDetalle",
-                    json={
-                        "siscod": session["siscod"],
-                        "sercod": session["sercod"],
-                        "medcod": session["medcod"],
-                        "fecha": session["new_fecha_api"],
-                    },
-                    headers=lolcli_headers,
-                )
-                .json()
-                .get("horarios", [])
+            _payload_detalle = {
+                "siscod": session["siscod"],
+                "sercod": session["sercod"],
+                "medcod": session["medcod"],
+                "fecha": session["new_fecha_api"],
+            }
+            print(f"DEBUG ListaCuposDetalle payload: {_payload_detalle}")
+            _resp_detalle = requests.post(
+                f"{LOLCLI_API_URL}/ListaCuposDetalle",
+                json=_payload_detalle,
+                headers=lolcli_headers,
             )
+            print(f"DEBUG ListaCuposDetalle response: {_resp_detalle.text[:500]}")
+            horarios = _resp_detalle.json().get("horarios", [])
             if not horarios:
                 send_whatsapp_message(
                     phone_to_reply,
