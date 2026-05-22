@@ -628,6 +628,13 @@ DAYS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Dom
 MONTHS_ES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
+PRESET_HORARIOS = [
+    {"hora": "0800"}, {"hora": "0830"}, {"hora": "0900"}, {"hora": "0930"},
+    {"hora": "1000"}, {"hora": "1030"}, {"hora": "1100"}, {"hora": "1130"},
+    {"hora": "1400"}, {"hora": "1430"}, {"hora": "1500"}, {"hora": "1530"},
+    {"hora": "1600"}, {"hora": "1700"},
+]
+
 
 def format_date_es(date_obj):
     return f"{DAYS_ES[date_obj.weekday()]}, {date_obj.day:02d} de {MONTHS_ES[date_obj.month]}"
@@ -1287,31 +1294,16 @@ def webhook_handler():
                 phone_to_reply,
                 f"Excelente, para el *{session['fecha_user']}*. Viendo las horas libres...",
             )
-            horarios = [
-                c for c in session.get("all_cupos", [])
-                if c.get("citdat") == session["fecha_api"]
-            ]
-            if not horarios:
-                send_whatsapp_message(
-                    phone_to_reply,
-                    "😔 No hay horarios disponibles para esa fecha. Escribe retroceder para elegir otra fecha. 📅",
-                )
-                session["history"].pop()
-            else:
-                reply = "⏰ Horarios disponibles para ese día:\n\n"
-                formatted_options = []
-                for i, h in enumerate(horarios, 1):
-                    hora_raw = h.get("hora", "")
-                    try:
-                        hora_fmt = datetime.strptime(hora_raw, "%H%M").strftime("%H:%M")
-                    except (ValueError, TypeError):
-                        hora_fmt = hora_raw
-                    reply += f"*{i}.* {hora_fmt}\n"
-                    formatted_options.append({"id": i, "data": h})
-                reply += "\n_Elige la hora (solo el número). ¡Ya casi terminamos!_"
-                session["options"] = formatted_options
-                session["state"] = "AWAITING_TIME"
-                send_whatsapp_message(phone_to_reply, reply)
+            reply = "⏰ Elige el horario de tu preferencia:\n\n"
+            formatted_options = []
+            for i, h in enumerate(PRESET_HORARIOS, 1):
+                hora_fmt = datetime.strptime(h["hora"], "%H%M").strftime("%H:%M")
+                reply += f"*{i}.* {hora_fmt}\n"
+                formatted_options.append({"id": i, "data": h})
+            reply += "\n_Elige la hora (solo el número). ¡Ya casi terminamos!_"
+            session["options"] = formatted_options
+            session["state"] = "AWAITING_TIME"
+            send_whatsapp_message(phone_to_reply, reply)
         else:
             send_whatsapp_message(
                 phone_to_reply, "No reconocí esa fecha. Elige una de la lista."
@@ -1324,7 +1316,7 @@ def webhook_handler():
             session.setdefault("history", []).append("AWAITING_TIME")
             session["hora_api"] = selected_option["hora"]
             time_obj = datetime.strptime(selected_option["hora"], "%H%M")
-            session["hora_user"] = time_obj.strftime("%I:%M %p")
+            session["hora_user"] = time_obj.strftime("%H:%M")
             reply = "¡Anotado! Para finalizar, ¿la cita será *Presencial* (1) o *Virtual* (2)?"
             send_whatsapp_message(phone_to_reply, reply)
             session["state"] = "AWAITING_APPOINTMENT_TYPE"
@@ -1864,31 +1856,16 @@ def webhook_handler():
                 phone_to_reply,
                 f"Perfecto, para el *{session['new_fecha_user']}*. Viendo horarios disponibles... ⏰",
             )
-            # Filter cupos by the selected date to get time slots
-            horarios = [
-                c for c in session.get("all_cupos", [])
-                if c.get("citdat") == session["new_fecha_api"]
-            ]
-            if not horarios:
-                send_whatsapp_message(
-                    phone_to_reply,
-                    "😔 No hay horarios disponibles para esa fecha. Escribe *retroceder* para elegir otra fecha.",
-                )
-            else:
-                reply = "⏰ Horarios disponibles:\n\n"
-                opts = []
-                for i, h in enumerate(horarios, 1):
-                    hora_raw = h.get("hora", "")
-                    try:
-                        hora_fmt = datetime.strptime(hora_raw, "%H%M").strftime("%H:%M")
-                    except (ValueError, TypeError):
-                        hora_fmt = hora_raw
-                    reply += f"*{i}.* {hora_fmt}\n"
-                    opts.append({"id": i, "data": h})
-                reply += "\n_Elige el número del horario._"
-                session["options"] = opts
-                session["state"] = "AWAITING_NEW_TIME_RESCHEDULE"
-                send_whatsapp_message(phone_to_reply, reply)
+            reply = "⏰ Elige el nuevo horario de tu preferencia:\n\n"
+            opts = []
+            for i, h in enumerate(PRESET_HORARIOS, 1):
+                hora_fmt = datetime.strptime(h["hora"], "%H%M").strftime("%H:%M")
+                reply += f"*{i}.* {hora_fmt}\n"
+                opts.append({"id": i, "data": h})
+            reply += "\n_Elige el número del horario._"
+            session["options"] = opts
+            session["state"] = "AWAITING_NEW_TIME_RESCHEDULE"
+            send_whatsapp_message(phone_to_reply, reply)
         else:
             send_whatsapp_message(
                 phone_to_reply,
@@ -1902,7 +1879,7 @@ def webhook_handler():
             session["new_hora_api"] = selected["hora"]
             session["new_hora_user"] = datetime.strptime(
                 selected["hora"], "%H%M"
-            ).strftime("%I:%M %p")
+            ).strftime("%H:%M")
             summary = (
                 f"🔄 *Confirmación de reprogramación:*\n\n"
                 f"👤 *Paciente:* {session.get('paciente_nombre', '')}\n"
