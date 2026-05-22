@@ -323,7 +323,7 @@ def format_menu(title, items, key_id, key_name):
         if key_id == "citdat":
             try:
                 date_obj = datetime.strptime(item.get(key_id, ""), "%Y%m%d")
-                display_name = date_obj.strftime("%A, %d de %B").capitalize()
+                display_name = format_date_es(date_obj)
             except (ValueError, TypeError):
                 display_name = item.get(key_id, "Fecha inválida")
         menu_text += f"*{i}.* {display_name}\n"
@@ -624,6 +624,15 @@ def show_final_summary(session, phone_to_reply):
 # INVNUM_INFO_ENDPOINT  = "<pending>"            payload: { "invnum": int }  ← payment receipt info
 
 
+DAYS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+MONTHS_ES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio",
+             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def format_date_es(date_obj):
+    return f"{DAYS_ES[date_obj.weekday()]}, {date_obj.day:02d} de {MONTHS_ES[date_obj.month]}"
+
+
 def format_appointments_list(citas, title):
     msg = f"{title}\n\n"
     formatted = []
@@ -633,35 +642,11 @@ def format_appointments_list(citas, title):
         date_obj = None
         try:
             date_obj = datetime.strptime(fecha_raw[:19], "%Y-%m-%dT%H:%M:%S")
-            DAYS_ES = [
-                "Lunes",
-                "Martes",
-                "Miércoles",
-                "Jueves",
-                "Viernes",
-                "Sábado",
-                "Domingo",
-            ]
-            MONTHS_ES = [
-                "",
-                "enero",
-                "febrero",
-                "marzo",
-                "abril",
-                "mayo",
-                "junio",
-                "julio",
-                "agosto",
-                "septiembre",
-                "octubre",
-                "noviembre",
-                "diciembre",
-            ]
-            fecha = f"{DAYS_ES[date_obj.weekday()]}, {date_obj.day:02d} de {MONTHS_ES[date_obj.month]}"
+            fecha = format_date_es(date_obj)
         except (ValueError, TypeError):
             try:
                 date_obj = datetime.strptime(fecha_raw, "%Y%m%d")
-                fecha = f"{DAYS_ES[date_obj.weekday()]}, {date_obj.day:02d} de {MONTHS_ES[date_obj.month]}"
+                fecha = format_date_es(date_obj)
 
             except (ValueError, TypeError):
                 fecha = fecha_raw or "Fecha no disponible"
@@ -1289,7 +1274,7 @@ def webhook_handler():
             session.setdefault("history", []).append("AWAITING_AVAILABLE_DATE")
             session["fecha_api"] = selected_option["citdat"]
             date_obj = datetime.strptime(selected_option["citdat"], "%Y%m%d")
-            session["fecha_user"] = date_obj.strftime("%A, %d de %B").capitalize()
+            session["fecha_user"] = format_date_es(date_obj)
             send_whatsapp_message(
                 phone_to_reply,
                 f"Excelente, para el *{session['fecha_user']}*. Viendo las horas libres...",
@@ -1861,7 +1846,7 @@ def webhook_handler():
         if selected_option:
             session["new_fecha_api"] = selected_option["citdat"]
             date_obj = datetime.strptime(selected_option["citdat"], "%Y%m%d")
-            session["new_fecha_user"] = date_obj.strftime("%A, %d de %B").capitalize()
+            session["new_fecha_user"] = format_date_es(date_obj)
             send_whatsapp_message(
                 phone_to_reply,
                 f"Perfecto, para el *{session['new_fecha_user']}*. Viendo horarios disponibles... ⏰",
