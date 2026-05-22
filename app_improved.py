@@ -42,6 +42,7 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 LOLCLI_API_URL = os.getenv("LOLCLI_API_URL")  # clinic system
 LOLCLI_ENTIDAD = os.getenv("LOLCLI_ENTIDAD")
 LOLCLI_API_TOKEN = os.getenv("LOLCLI_API_TOKEN")
+LOLCLI_USECOD = int(os.getenv("LOLCLI_USECOD", "0"))  # user ID for ActualizarCitaProtocolo — ask LOLCLI team
 DNI_API_URL = "https://my.apidev.pro/api/dni"
 DNI_API_TOKEN = os.getenv("DNI_API_TOKEN")  # RENIEC lookup
 
@@ -1882,8 +1883,6 @@ def webhook_handler():
             ).strftime("%H:%M")
             summary = (
                 f"🔄 *Confirmación de reprogramación:*\n\n"
-                f"👤 *Paciente:* {session.get('paciente_nombre', '')}\n"
-                f"🏥 *Sede:* {session['establishment_name']}\n"
                 f"🩺 *Especialidad:* {session['sernam']}\n"
                 f"👨‍⚕️ *Médico:* {session['mednam']}\n"
                 f"🗓️ *Nueva fecha:* {session['new_fecha_user']}\n"
@@ -1915,16 +1914,19 @@ def webhook_handler():
                     "xxsercod": session["sercod"],
                     "xxfecref": fecref_str,
                     "xxcittip": session.get("cittip", "P"),
+                    "xxusecod": LOLCLI_USECOD,
                 }
                 if session.get("cittip") == "V" and session.get("zoom_link"):
                     payload_actualizar["xxcitzoomlink"] = session["zoom_link"]
 
+                print(f"INFO ActualizarCitaProtocolo payload: {payload_actualizar}")
                 resp = requests.post(
                     f"{LOLCLI_API_URL}/ActualizarCitaProtocolo",
                     json=payload_actualizar,
                     headers=lolcli_headers,
                 )
                 result = resp.json()
+                print(f"INFO ActualizarCitaProtocolo response {resp.status_code}: {result}")
                 if resp.ok and result.get("status") == "success":
                     send_whatsapp_message(
                         phone_to_reply,
