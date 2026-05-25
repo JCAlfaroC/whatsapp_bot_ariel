@@ -1606,7 +1606,12 @@ def webhook_handler():
                         f"¡Pago confirmado! ✅\n\nTu cita está 100% confirmada.\n\n¡Gracias por preferir LOLIMSA! Te esperamos.",
                     )
                     save_reminder(session)
-                    user_sessions.pop(sender, None)
+                    send_whatsapp_message(
+                        phone_to_reply,
+                        "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
+                    )
+                    session["state"] = "AWAITING_POST_FLOW"
+                    user_sessions[sender] = session
                     return jsonify({"status": "completed_and_session_cleared"})
 
                 send_whatsapp_message(
@@ -1640,7 +1645,12 @@ def webhook_handler():
                         f"¡Pago confirmado! ✅\n\nTu cita está 100% confirmada.\n\n¡Gracias por preferir LOLIMSA! Te esperamos.",
                     )
                     save_reminder(session)
-                    user_sessions.pop(sender, None)
+                    send_whatsapp_message(
+                        phone_to_reply,
+                        "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
+                    )
+                    session["state"] = "AWAITING_POST_FLOW"
+                    user_sessions[sender] = session
                     return jsonify({"status": "completed_and_session_cleared"})
                 else:
                     current_status = payment_data.get("estado_pago", "desconocido")
@@ -1734,7 +1744,12 @@ def webhook_handler():
                 )
                 msg += "_ℹ️ Para reprogramar una cita, selecciona la opción *3* en el menú principal._"
                 send_whatsapp_message(phone_to_reply, msg)
-            user_sessions.pop(sender, None)
+            send_whatsapp_message(
+                phone_to_reply,
+                "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
+            )
+            session["state"] = "AWAITING_POST_FLOW"
+            user_sessions[sender] = session
             return jsonify({"status": "consult_done"})
         except Exception as e:
             print(f"ERROR en AWAITING_DOC_NUMBER_FOR_CONSULT: {e}")
@@ -1967,7 +1982,12 @@ def webhook_handler():
                         f"⏰ *Nueva hora:* {session['new_hora_user']}\n\n"
                         f"¡Te esperamos! 😊",
                     )
-                    user_sessions.pop(sender, None)
+                    send_whatsapp_message(
+                        phone_to_reply,
+                        "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
+                    )
+                    session["state"] = "AWAITING_POST_FLOW"
+                    user_sessions[sender] = session
                     return jsonify({"status": "rescheduled"})
                 else:
                     raise Exception(
@@ -1986,6 +2006,16 @@ def webhook_handler():
             send_whatsapp_message(
                 phone_to_reply,
                 "Entendido. Escribe *'salir'* si deseas cancelar o continúa eligiendo. 😊",
+            )
+
+    elif state == "AWAITING_POST_FLOW":
+        if message_text.lower() in ["continuar", "continue"]:
+            session.clear()
+            show_main_menu(phone_to_reply, session)
+        else:
+            send_whatsapp_message(
+                phone_to_reply,
+                "Escribe *'continuar'* para volver al menú o *'salir'* para terminar la sesión. 😊",
             )
 
     user_sessions[sender] = session
