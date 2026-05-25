@@ -682,7 +682,7 @@ def show_main_menu(phone_to_reply, session):
         "*1.* 📅 Agendar una nueva cita\n"
         "*2.* 🔍 Consultar mis citas\n"
         "*3.* 🔄 Reprogramar una cita\n"
-        "*4.* 💳 Pagar cita pendiente\n\n"
+        # "*4.* 💳 Pagar cita pendiente\n\n"  # TODO: re-enable when ready
         "_Escribe el número de tu elección._"
     )
     session["state"] = "AWAITING_MAIN_MENU"
@@ -792,16 +792,16 @@ def webhook_handler():
             session["state"] = "AWAITING_DOC_NUMBER_FOR_RESCHEDULE"
             send_whatsapp_message(phone_to_reply, "🔄 Para reprogramar tu cita, ingresa tu número de D.N.I.")
 
-        elif choice in ["4", "pagar", "pago pendiente"]:
-            reply, opts = format_menu(
-                "Para pagar tu cita, selecciona tu tipo de documento:",
-                lista_documentos_global,
-                "tidcod",
-                "tiddes",
-            )
-            session["options"] = opts
-            session["state"] = "AWAITING_DOC_TYPE_FOR_PAYMENT"
-            send_whatsapp_message(phone_to_reply, reply)
+        # elif choice in ["4", "pagar", "pago pendiente"]:  # TODO: re-enable when ready
+        #     reply, opts = format_menu(
+        #         "Para pagar tu cita, selecciona tu tipo de documento:",
+        #         lista_documentos_global,
+        #         "tidcod",
+        #         "tiddes",
+        #     )
+        #     session["options"] = opts
+        #     session["state"] = "AWAITING_DOC_TYPE_FOR_PAYMENT"
+        #     send_whatsapp_message(phone_to_reply, reply)
 
         else:
             send_whatsapp_message(
@@ -809,132 +809,75 @@ def webhook_handler():
                 "❓ Por favor, escribe *1*, *2*, *3* o *4* para elegir una opción. 😊",
             )
 
-    elif state == "AWAITING_DOC_TYPE_FOR_PAYMENT":
-        selected_option = process_user_choice(
-            message_text, session.get("options", []), "tiddes"
-        )
-        if selected_option:
-            session["tidcod"] = selected_option["tidcod"]
-            session["tiddes"] = selected_option["tiddes"]
-            send_whatsapp_message(
-                phone_to_reply,
-                f"Entendido. Ahora, por favor, ingresa tu número de {selected_option['tiddes']}.",
-            )
-            session["state"] = "AWAITING_DOC_NUMBER_FOR_PAYMENT"
-        else:
-            send_whatsapp_message(
-                phone_to_reply,
-                "❓ No reconocí esa opción. Por favor, escribe el número de tu elección de la lista. 🙏",
-            )
+    # elif state == "AWAITING_DOC_TYPE_FOR_PAYMENT":  # TODO: re-enable when ready
+    #     selected_option = process_user_choice(
+    #         message_text, session.get("options", []), "tiddes"
+    #     )
+    #     if selected_option:
+    #         session["tidcod"] = selected_option["tidcod"]
+    #         session["tiddes"] = selected_option["tiddes"]
+    #         send_whatsapp_message(
+    #             phone_to_reply,
+    #             f"Entendido. Ahora, por favor, ingresa tu número de {selected_option['tiddes']}.",
+    #         )
+    #         session["state"] = "AWAITING_DOC_NUMBER_FOR_PAYMENT"
+    #     else:
+    #         send_whatsapp_message(
+    #             phone_to_reply,
+    #             "❓ No reconocí esa opción. Por favor, escribe el número de tu elección de la lista. 🙏",
+    #         )
 
-    elif state == "AWAITING_DOC_NUMBER_FOR_PAYMENT":
-        doc_number = message_text.strip()
-        tidcod = session.get("tidcod")
+    # elif state == "AWAITING_DOC_NUMBER_FOR_PAYMENT":  # TODO: re-enable when ready
+    #     doc_number = message_text.strip()
+    #     tidcod = session.get("tidcod")
+    #     if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
+    #         send_whatsapp_message(phone_to_reply, "⚠️ El DNI debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏")
+    #         user_sessions[sender] = session
+    #         return jsonify({"status": "invalid_dni_for_payment"})
+    #     try:
+    #         pacientes = requests.post(f"{LOLCLI_API_URL}/ValidarPaciente", json={"tidcod": tidcod, "pacdoc": doc_number}, headers=lolcli_headers).json().get("paciente", [])
+    #         if not pacientes:
+    #             send_whatsapp_message(phone_to_reply, "🔍 No encontramos ningún paciente registrado con ese documento. 📞")
+    #             user_sessions.pop(sender, None)
+    #             return jsonify({"status": "patient_not_found_for_payment"})
+    #         paciente = pacientes[0]
+    #         session.update({"pachis": paciente["pachis"], "paciente_nombre": paciente["pacpmn"], "pacdoc": doc_number, "pacdir": paciente.get("pacdir", "DIRECCIÓN NO ESPECIFICADA")})
+    #         send_whatsapp_message(phone_to_reply, f"Gracias, {paciente['pacpmn']}. Un momento mientras consulto tus citas... 🔍")
+    #         response_pagos = requests.post(f"{LOLCLI_API_URL}/ListaPagosPendientes", json={"pachis": paciente["pachis"]}, headers=lolcli_headers)
+    #         if response_pagos.ok:
+    #             pendientes = response_pagos.json().get("pendientes", [])
+    #             if pendientes:
+    #                 pago_reciente = pendientes[-1]
+    #                 session["prfnum_cita"] = pago_reciente.get("prfnum")
+    #                 session["invnum_cita"] = pago_reciente.get("invnum")
+    #                 session["costo_total"] = float(pago_reciente.get("prfppac", 0.0))
+    #                 send_whatsapp_message(phone_to_reply, f"Encontré una reserva pendiente de pago por *S/ {session['costo_total']:.2f}*.\n\nEscribe *'Pagar'* para generar un nuevo enlace de pago.")
+    #                 session["state"] = "PENDING_PAYMENT_ACTION"
+    #             else:
+    #                 send_whatsapp_message(phone_to_reply, "¡Buenas noticias! No encontré ninguna cita *pendiente de pago* a tu nombre. 😊")
+    #                 user_sessions.pop(sender, None)
+    #         else:
+    #             send_whatsapp_message(phone_to_reply, "😔 Tuvimos un inconveniente al consultar tus pagos. Por favor, intenta en unos minutos. 🙏")
+    #     except Exception as e:
+    #         send_whatsapp_message(phone_to_reply, "😔 Ocurrió un error inesperado. Por favor, intenta de nuevo en unos momentos. 🙏")
+    #         print(f"Error en AWAITING_DOC_NUMBER_FOR_PAYMENT: {e}")
 
-        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
-            send_whatsapp_message(
-                phone_to_reply,
-                "⚠️ El DNI debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏",
-            )
-            user_sessions[sender] = session
-            return jsonify({"status": "invalid_dni_for_payment"})
+    # elif state == "PENDING_PAYMENT_ACTION":  # TODO: re-enable when ready
+    #     if "pagar" in message_text.lower():
+    #         session["tdofac"] = "BO"
+    #         send_whatsapp_message(phone_to_reply, "💌 Perfecto. Para enviarte el comprobante, necesitamos tu correo electrónico. Por favor, escríbelo a continuación.")
+    #         session["state"] = "AWAITING_EMAIL_FOR_PENDING_PAYMENT"
+    #     else:
+    #         send_whatsapp_message(phone_to_reply, "💳 Cuando estés listo/a, escribe Pagar para obtener tu enlace de pago. Si prefieres cancelar, escribe salir. 😊")
 
-        try:
-            payload_paciente = {"tidcod": tidcod, "pacdoc": doc_number}
-            response_paciente = requests.post(
-                f"{LOLCLI_API_URL}/ValidarPaciente",
-                json=payload_paciente,
-                headers=lolcli_headers,
-            )
-            pacientes = response_paciente.json().get("paciente", [])
-
-            if not pacientes:
-                send_whatsapp_message(
-                    phone_to_reply,
-                    "🔍 No encontramos ningún paciente registrado con ese documento. Por favor, verifica que el número sea correcto o comunícate con nosotros. 📞",
-                )
-                user_sessions.pop(sender, None)
-                return jsonify({"status": "patient_not_found_for_payment"})
-
-            paciente = pacientes[0]
-            session.update(
-                {
-                    "pachis": paciente["pachis"],
-                    "paciente_nombre": paciente["pacpmn"],
-                    "pacdoc": doc_number,
-                    "pacdir": paciente.get("pacdir", "DIRECCIÓN NO ESPECIFICADA"),
-                }
-            )
-            send_whatsapp_message(
-                phone_to_reply,
-                f"Gracias, {paciente['pacpmn']}. Un momento mientras consulto tus citas... 🔍",
-            )
-            payload_pagos = {"pachis": paciente["pachis"]}
-            response_pagos = requests.post(
-                f"{LOLCLI_API_URL}/ListaPagosPendientes",
-                json=payload_pagos,
-                headers=lolcli_headers,
-            )
-
-            if response_pagos.ok:
-                pendientes = response_pagos.json().get("pendientes", [])
-                if pendientes:
-                    pago_reciente = pendientes[-1]
-                    session["prfnum_cita"] = pago_reciente.get("prfnum")
-                    session["invnum_cita"] = pago_reciente.get("invnum")
-                    session["costo_total"] = float(pago_reciente.get("prfppac", 0.0))
-
-                    send_whatsapp_message(
-                        phone_to_reply,
-                        f"Encontré una reserva pendiente de pago por *S/ {session['costo_total']:.2f}*.\n\nEscribe *'Pagar'* para generar un nuevo enlace de pago.",
-                    )
-                    session["state"] = "PENDING_PAYMENT_ACTION"
-                else:
-                    send_whatsapp_message(
-                        phone_to_reply,
-                        "¡Buenas noticias! No encontré ninguna cita *pendiente de pago* a tu nombre.\n\nEsto puede significar que no tienes citas agendadas o que ya están todas pagadas. 😊",
-                    )
-                    user_sessions.pop(sender, None)
-            else:
-                send_whatsapp_message(
-                    phone_to_reply,
-                    "😔 Tuvimos un inconveniente al consultar tus pagos. Por favor, intenta en unos minutos. 🙏",
-                )
-        except Exception as e:
-            send_whatsapp_message(
-                phone_to_reply,
-                "😔 Ocurrió un error inesperado. Por favor, intenta de nuevo en unos momentos. 🙏",
-            )
-            print(f"Error en AWAITING_DOC_NUMBER_FOR_PAYMENT: {e}")
-
-    elif state == "PENDING_PAYMENT_ACTION":
-        if "pagar" in message_text.lower():
-            session["tdofac"] = "BO"
-            send_whatsapp_message(
-                phone_to_reply,
-                "💌 Perfecto. Para enviarte el comprobante, necesitamos tu correo electrónico. Por favor, escríbelo a continuación.",
-            )
-            session["state"] = "AWAITING_EMAIL_FOR_PENDING_PAYMENT"
-        else:
-            send_whatsapp_message(
-                phone_to_reply,
-                "💳 Cuando estés listo/a, escribe Pagar para obtener tu enlace de pago. Si prefieres cancelar, escribe salir. 😊",
-            )
-
-    elif state == "AWAITING_EMAIL_FOR_PENDING_PAYMENT":
-        email = message_text.strip()
-        if "@" in email and "." in email:
-            session["email"] = email
-            send_whatsapp_message(
-                phone_to_reply,
-                "⏳ Gracias. Estamos generando tu enlace de pago personalizado, un momento por favor...",
-            )
-            generate_payment_link_and_send(session, phone_to_reply, lolcli_headers)
-        else:
-            send_whatsapp_message(
-                phone_to_reply,
-                "📧 El correo ingresado no parece ser válido. Por favor, verifica que tenga el formato correcto (ejemplo: nombre@correo.com).",
-            )
+    # elif state == "AWAITING_EMAIL_FOR_PENDING_PAYMENT":  # TODO: re-enable when ready
+    #     email = message_text.strip()
+    #     if "@" in email and "." in email:
+    #         session["email"] = email
+    #         send_whatsapp_message(phone_to_reply, "⏳ Gracias. Estamos generando tu enlace de pago personalizado, un momento por favor...")
+    #         generate_payment_link_and_send(session, phone_to_reply, lolcli_headers)
+    #     else:
+    #         send_whatsapp_message(phone_to_reply, "📧 El correo ingresado no parece ser válido. Por favor, verifica que tenga el formato correcto (ejemplo: nombre@correo.com).")
 
     elif state == "AWAITING_DOC_TYPE":
         selected_option = process_user_choice(
