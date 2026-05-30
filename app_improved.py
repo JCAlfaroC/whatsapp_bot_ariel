@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 from thefuzz import process
 
 # --- Configuración del Idioma ---
@@ -36,18 +36,14 @@ def test():
     return "OK", 200
 
 
-EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")  # wahtsapp gateway
+EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
-EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
-LOLCLI_API_URL = os.getenv("LOLCLI_API_URL")  # clinic system
-LOLCLI_ENTIDAD = os.getenv("LOLCLI_ENTIDAD")
-LOLCLI_API_TOKEN = os.getenv("LOLCLI_API_TOKEN")
 DNI_API_URL = "https://my.apidev.pro/api/dni"
-DNI_API_TOKEN = os.getenv("DNI_API_TOKEN")  # RENIEC lookup
+DNI_API_TOKEN = os.getenv("DssNI_API_TOKEN")
 
-user_sessions = {}  # stores all active conversations in RAM
-lista_sedes_global = []  # clinic branches (loaded once at startup)
-lista_documentos_global = []  # document types (loaded once at startup)
+CLINICS = {}
+clinic_caches = {}
+user_sessions = {}
 
 # --- Configuración de Tiempos de Inactividad ---
 INACTIVITY_REMINDER_PERIOD = 5 * 60
@@ -93,8 +89,8 @@ def session_cleanup_task():
     while True:
         time.sleep(60)
         current_time = time.time()
-        for sender in list(user_sessions.keys()):
-            session = user_sessions.get(sender)
+        for session_key in list(user_sessions.keys()):
+            session = user_sessions.get(session_key)
             if (
                 not session
                 or "last_interaction_time" not in session
@@ -102,9 +98,10 @@ def session_cleanup_task():
             ):
                 continue
             inactive_time = current_time - session["last_interaction_time"]
-            phone_to_reply = sender.split("@")[0]
+            phone_to_reply = session_key.split(":", 1)[1]
+            evolution_instance = session.get("evolution_instance", "")
             if inactive_time > SESSION_EXPIRATION_PERIOD:
-                print(f"INFO: Sesión para {sender} expirada por inactividad.")
+                print(f"INFO: Sesión para {phone_to_reply} expirada por inactividad.")
 
                 # WARNING (changes for the 7 messages sent before payment confirmation)
                 if session.get("invnum_cita"):
@@ -117,16 +114,18 @@ def session_cleanup_task():
                 send_whatsapp_message(
                     phone_to_reply,
                     "⏰ Tu sesión ha cerrado por inactividad. Cuando quieras continuar, solo escríbenos y estaremos listos para ayudarte. 😊",
+                    evolution_instance,
                 )
-                user_sessions.pop(sender, None)
+                user_sessions.pop(session_key, None)
                 continue
             if inactive_time > INACTIVITY_REMINDER_PERIOD and not session.get(
                 "reminder_sent"
             ):
-                print(f"INFO: Enviando recordatorio de inactividad a {sender}.")
+                print(f"INFO: Enviando recordatorio de inactividad a {phone_to_reply}.")
                 send_whatsapp_message(
                     phone_to_reply,
                     "👋 ¡Hola! Notamos que dejaste tu cita a medias. ¿Deseas continuar? Si no respondemos pronto, tu sesión se cerrará automáticamente. 🕐",
+                    evolution_instance,
                 )
                 session["reminder_sent"] = True
 
@@ -192,6 +191,7 @@ def save_reminder(session):
         "specialty": session.get("sernam", ""),
         "sede": session.get("establishment_name", ""),
         "appointment_datetime": apt_datetime,
+        "evolution_instance": session.get("evolution_instance", ""),
         "reminded": False,
     }
 
@@ -247,7 +247,8 @@ def reminder_task():
                     f"⏰ *Hora:* {reminder['appointment_datetime']}\n"
                     f"Por favor, preséntese 15 minutos antes. 😊"
                 )
-                send_whatsapp_message(reminder["phone"], whatsapp_msg)
+                evolution_instance = reminder.get("evolution_instance") or os.getenv("EVOLUTION_INSTANCE_NAME", "")
+                send_whatsapp_message(reminder["phone"], whatsapp_msg, evolution_instance)
                 reminder["reminded"] = True
                 updated = True
 
@@ -256,24 +257,39 @@ def reminder_task():
                 json.dump(reminders, f, ensure_ascii=False, indent=2)
 
 
-def preload_global_lists():
-    global lista_sedes_global, lista_documentos_global
+def load_clinics():
+    global CLINICS, clinic_caches
+    try:
+        with open("clinics.json", "r", encoding="utf-8") as f:
+            CLINICS = json.load(f)
+        clinic_caches = {cid: {"sedes": [], "docs": []} for cid in CLINICS}
+        print(f"INFO: {len(CLINICS)} clínica(s) cargada(s): {list(CLINICS.keys())}")
+    except Exception as e:
+        print(f"ERROR: No se pudo cargar clinics.json: {e}")
+
+
+def preload_clinic_lists(clinic_id, config):
     headers = {
-        "Authorization": f"Basic {LOLCLI_API_TOKEN}",
+        "Authorization": f"Basic {config['lolcli_token']}",
         "Content-Type": "application/json",
     }
     try:
         response_sedes = requests.post(
-            f"{LOLCLI_API_URL}/ListaEstablecimientos",
-            json={"entidad": LOLCLI_ENTIDAD},
+            f"{config['lolcli_url']}/ListaEstablecimientos",
+            json={"entidad": config["lolcli_entidad"]},
             headers=headers,
             timeout=5,
         )
         if response_sedes.ok:
-            lista_sedes_global = response_sedes.json().get("establecimientos", [])
-            print(f"INFO: Se han cargado {len(lista_sedes_global)} sedes.")
+            clinic_caches[clinic_id]["sedes"] = response_sedes.json().get(
+                "establecimientos", []
+            )
+            print(
+                f"INFO [{clinic_id}]: {len(clinic_caches[clinic_id]['sedes'])} sedes cargadas."
+            )
+
         response_docs = requests.post(
-            f"{LOLCLI_API_URL}/ListaTipoDocumentoElolcli",
+            f"{config['lolcli_url']}/ListaTipoDocumentoElolcli",
             json={},
             headers=headers,
             timeout=5,
@@ -284,12 +300,12 @@ def preload_global_lists():
                 for doc in response_docs.json().get("tipoDocumentos", [])
                 if doc["tidcod"] in ["01", "02", "03", "04"]
             ]
-            lista_documentos_global = docs_filtrados
+            clinic_caches[clinic_id]["docs"] = docs_filtrados
             print(
-                f"INFO: Se han cargado {len(lista_documentos_global)} tipos de documento."
+                f"INFO [{clinic_id}]: {len(clinic_caches[clinic_id]['docs'])} tipos de documento cargados."
             )
-    except requests.exceptions.RequestException as e:
-        print(f"ERROR: Fallo en la conexión con la API al pre-cargar listas: {e}")
+    except Exception as e:
+        print(f"ERROR [{clinic_id}]: Fallo al pre-cargar listas: {e}")
 
 
 def normalize_text(text):
@@ -302,11 +318,16 @@ def normalize_text(text):
     return " ".join(text.split())
 
 
-def send_whatsapp_message(phone_number, text):
+def send_whatsapp_message(phone_number, text, evolution_instance=None):
     time.sleep(1.5)
+    if evolution_instance is None:
+        try:
+            evolution_instance = g.evolution_instance
+        except RuntimeError:
+            evolution_instance = os.getenv("EVOLUTION_INSTANCE_NAME", "")
     headers = {"apikey": EVOLUTION_API_KEY}
     payload = {"number": phone_number, "text": text}
-    url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
+    url = f"{EVOLUTION_API_URL}/message/sendText/{evolution_instance}"
     try:
         response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
@@ -360,8 +381,8 @@ def replay_state_prompt(state, session, phone_to_reply, headers):
     print(f"Retrocediendo al estado: {state}")
     if state == "AWAITING_ESTABLISHMENT":
         response = requests.post(
-            f"{LOLCLI_API_URL}/ListaEstablecimientos",
-            json={"entidad": LOLCLI_ENTIDAD},
+            f"{g.lolcli_url}/ListaEstablecimientos",
+            json={"entidad": g.lolcli_entidad},
             headers=headers,
         )
         options = response.json().get("establecimientos", [])
@@ -375,7 +396,7 @@ def replay_state_prompt(state, session, phone_to_reply, headers):
         send_whatsapp_message(phone_to_reply, reply)
     elif state == "AWAITING_SPECIALTY":
         response = requests.post(
-            f"{LOLCLI_API_URL}/ListaServicios",
+            f"{g.lolcli_url}/ListaServicios",
             json={"siscod": session["siscod"]},
             headers=headers,
         )
@@ -391,7 +412,7 @@ def replay_state_prompt(state, session, phone_to_reply, headers):
     elif state == "AWAITING_DOCTOR":
         payload_medicos = {"siscod": session["siscod"], "sercod": session["sercod"]}
         response_medicos = requests.post(
-            f"{LOLCLI_API_URL}/ListaMedicos",
+            f"{g.lolcli_url}/ListaMedicos",
             json=payload_medicos,
             headers=lolcli_headers,
         )
@@ -413,7 +434,7 @@ def replay_state_prompt(state, session, phone_to_reply, headers):
             "fecha": today_str,
         }
         response = requests.post(
-            f"{LOLCLI_API_URL}/ListaCuposDisponibles",
+            f"{g.lolcli_url}/ListaCuposDisponibles",
             json=payload,
             headers=lolcli_headers,
         )
@@ -448,7 +469,7 @@ def generate_payment_link_and_send(session, phone_to_reply, headers):
             "paydat": datetime.now().strftime("%d-%m-%Y %H:%M:%S.000"),
         }
 
-        url_pago = f"{LOLCLI_API_URL}/GenerarLinkPagoCita"
+        url_pago = f"{g.lolcli_url}/GenerarLinkPagoCita"
         print(f"INFO: Generando link de pago con payload: {payload_pago}")
 
         response_link = requests.post(url_pago, json=payload_pago, headers=headers)
@@ -497,8 +518,8 @@ def continue_appointment_flow(session, phone_to_reply, lolcli_headers):
         "✅ ¡Excelente! Ya tenemos tus datos. Ahora continuemos con los detalles de tu cita. 😊",
     )
     response_est = requests.post(
-        f"{LOLCLI_API_URL}/ListaEstablecimientos",
-        json={"entidad": LOLCLI_ENTIDAD},
+        f"{g.lolcli_url}/ListaEstablecimientos",
+        json={"entidad": g.lolcli_entidad},
         headers=lolcli_headers,
     )
     establecimientos = response_est.json().get("establecimientos", [])
@@ -538,7 +559,7 @@ def register_new_patient(session, phone_to_reply, headers):
 
         print(f"INFO: Registrando nuevo paciente con payload: {payload_registro}")
         response_registro = requests.post(
-            f"{LOLCLI_API_URL}/RegistroPaciente", json=payload_registro, headers=headers
+            f"{g.lolcli_url}/RegistroPaciente", json=payload_registro, headers=headers
         )
 
         if response_registro.ok and response_registro.json().get("status") == "success":
@@ -548,7 +569,7 @@ def register_new_patient(session, phone_to_reply, headers):
                 "pacdoc": data.get("pacdoc"),
             }
             response_validacion = requests.post(
-                f"{LOLCLI_API_URL}/ValidarPaciente",
+                f"{g.lolcli_url}/ValidarPaciente",
                 json=payload_validacion,
                 headers=headers,
             )
@@ -569,7 +590,7 @@ def register_new_patient(session, phone_to_reply, headers):
             send_whatsapp_message(
                 phone_to_reply, f"Hubo un problema al registrarte: {error_msg}."
             )
-            user_sessions.pop(session["sender"], None)
+            user_sessions.pop(f"{session.get('clinic_id')}:{session['sender']}", None)
             return False
     except Exception as e:
         print(f"ERROR en register_new_patient: {e}")
@@ -577,7 +598,7 @@ def register_new_patient(session, phone_to_reply, headers):
             phone_to_reply,
             "😔 Ocurrió un error inesperado durante tu registro. Por favor, contacta a nuestro equipo de soporte. 🙏",
         )
-        user_sessions.pop(session["sender"], None)
+        user_sessions.pop(f"{session.get('clinic_id')}:{session['sender']}", None)
         return False
 
 
@@ -625,14 +646,37 @@ def show_final_summary(session, phone_to_reply):
 
 
 DAYS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-MONTHS_ES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio",
-             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+MONTHS_ES = [
+    "",
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+]
 
 PRESET_HORARIOS = [
-    {"hora": "0800"}, {"hora": "0830"}, {"hora": "0900"}, {"hora": "0930"},
-    {"hora": "1000"}, {"hora": "1030"}, {"hora": "1100"}, {"hora": "1130"},
-    {"hora": "1400"}, {"hora": "1430"}, {"hora": "1500"}, {"hora": "1530"},
-    {"hora": "1600"}, {"hora": "1700"},
+    {"hora": "0800"},
+    {"hora": "0830"},
+    {"hora": "0900"},
+    {"hora": "0930"},
+    {"hora": "1000"},
+    {"hora": "1030"},
+    {"hora": "1100"},
+    {"hora": "1130"},
+    {"hora": "1400"},
+    {"hora": "1430"},
+    {"hora": "1500"},
+    {"hora": "1530"},
+    {"hora": "1600"},
+    {"hora": "1700"},
 ]
 
 
@@ -689,8 +733,19 @@ def show_main_menu(phone_to_reply, session):
     send_whatsapp_message(phone_to_reply, menu)
 
 
-@app.route("/webhook", methods=["POST"])
-def webhook_handler():
+@app.route("/webhook/<clinic_id>", methods=["POST"])
+def webhook_handler(clinic_id):
+    if clinic_id not in CLINICS:
+        return jsonify({"status": "unknown_clinic"}), 404
+
+    clinic_config = CLINICS[clinic_id]
+    g.clinic_id = clinic_id
+    g.clinic_config = clinic_config
+    g.lolcli_url = clinic_config["lolcli_url"]
+    g.lolcli_token = clinic_config["lolcli_token"]
+    g.lolcli_entidad = clinic_config["lolcli_entidad"]
+    g.evolution_instance = clinic_config["evolution_instance"]
+
     data = request.json
     try:
         sender = data["data"]["key"]["remoteJid"].split("@")[0]
@@ -704,20 +759,24 @@ def webhook_handler():
     except (KeyError, TypeError):
         return jsonify({"status": "ignored_format"}), 200
 
-    print(f"Mensaje de {sender}: '{message_text}'")
-    session = user_sessions.get(sender, {"state": "START"})
+    session_key = f"{clinic_id}:{sender}"
+    print(f"[{clinic_id}] Mensaje de {sender}: '{message_text}'")
+    session = user_sessions.get(session_key, {"state": "START"})
     session["sender"] = sender
+    session["clinic_id"] = clinic_id
+    session["evolution_instance"] = g.evolution_instance
     phone_to_reply = sender
     lolcli_headers = {
-        "Authorization": f"Basic {LOLCLI_API_TOKEN}",
+        "Authorization": f"Basic {g.lolcli_token}",
         "Content-Type": "application/json",
     }
 
     session["last_interaction_time"] = time.time()
-    session["reminder_sent"] = False
+    if session.get("reminder_sent"):
+        session["reminder_sent"] = False
 
     if message_text.lower() in ["salir", "cancelar"]:
-        user_sessions.pop(sender, None)
+        user_sessions.pop(session_key, None)
         send_whatsapp_message(
             phone_to_reply,
             "✅ Entendido. Hemos cancelado el proceso. Si deseas agendar una cita luego, aquí estaremos. ¡Que tengas un excelente día! 🌟",
@@ -731,7 +790,7 @@ def webhook_handler():
             previous_state = history[-1] if history else "START"
             session["state"] = previous_state
             replay_state_prompt(previous_state, session, phone_to_reply, lolcli_headers)
-            user_sessions[sender] = session
+            user_sessions[session_key] = session
             return jsonify({"status": "reverted"})
         else:
             send_whatsapp_message(
@@ -753,21 +812,21 @@ def webhook_handler():
     elif state == "AWAITING_MAIN_MENU":
         # Technical error only appear if the LOLCLI API is still unreachable when the suer picks an option
         # To allow the list loaded fine at startup, the retry does nothing (instant check)
-        if not lista_documentos_global:
-            preload_global_lists()
-        if not lista_documentos_global:
+        if not clinic_caches[g.clinic_id]["docs"]:
+            preload_clinic_lists(g.clinic_id, g.clinic_config)
+        if not clinic_caches[g.clinic_id]["docs"]:
             send_whatsapp_message(
                 phone_to_reply,
                 "😔 Lo sentimos, tenemos dificultades técnicas. Por favor, intenta en unos minutos o llámanos directamente. 🙏",
             )
-            user_sessions[sender] = session
+            user_sessions[session_key] = session
             return jsonify({"status": "error_loading_lists"})
 
         choice = message_text.strip().lower()
         if choice in ["1", "agendar", "nueva cita", "nueva"]:
             reply, opts = format_menu(
                 "Para empezar, por favor, selecciona tu tipo de documento:",
-                lista_documentos_global,
+                clinic_caches[g.clinic_id]["docs"],
                 "tidcod",
                 "tiddes",
             )
@@ -778,7 +837,7 @@ def webhook_handler():
         elif choice in ["2", "consultar", "mis citas"]:
             reply, opts = format_menu(
                 "Para consultar tus citas, selecciona tu tipo de documento:",
-                lista_documentos_global,
+                clinic_caches[g.clinic_id]["docs"],
                 "tidcod",
                 "tiddes",
             )
@@ -790,12 +849,15 @@ def webhook_handler():
             session["tidcod"] = "03"
             session["tiddes"] = "D.N.I."
             session["state"] = "AWAITING_DOC_NUMBER_FOR_RESCHEDULE"
-            send_whatsapp_message(phone_to_reply, "🔄 Para reprogramar tu cita, ingresa tu número de D.N.I.")
+            send_whatsapp_message(
+                phone_to_reply,
+                "🔄 Para reprogramar tu cita, ingresa tu número de D.N.I.",
+            )
 
         # elif choice in ["4", "pagar", "pago pendiente"]:  # TODO: re-enable when ready
         #     reply, opts = format_menu(
         #         "Para pagar tu cita, selecciona tu tipo de documento:",
-        #         lista_documentos_global,
+        #         clinic_caches[g.clinic_id]["docs"],
         #         "tidcod",
         #         "tiddes",
         #     )
@@ -832,18 +894,18 @@ def webhook_handler():
     #     tidcod = session.get("tidcod")
     #     if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
     #         send_whatsapp_message(phone_to_reply, "⚠️ El DNI debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏")
-    #         user_sessions[sender] = session
+    #         user_sessions[session_key] = session
     #         return jsonify({"status": "invalid_dni_for_payment"})
     #     try:
-    #         pacientes = requests.post(f"{LOLCLI_API_URL}/ValidarPaciente", json={"tidcod": tidcod, "pacdoc": doc_number}, headers=lolcli_headers).json().get("paciente", [])
+    #         pacientes = requests.post(f"{g.lolcli_url}/ValidarPaciente", json={"tidcod": tidcod, "pacdoc": doc_number}, headers=lolcli_headers).json().get("paciente", [])
     #         if not pacientes:
     #             send_whatsapp_message(phone_to_reply, "🔍 No encontramos ningún paciente registrado con ese documento. 📞")
-    #             user_sessions.pop(sender, None)
+    #             user_sessions.pop(session_key, None)
     #             return jsonify({"status": "patient_not_found_for_payment"})
     #         paciente = pacientes[0]
     #         session.update({"pachis": paciente["pachis"], "paciente_nombre": paciente["pacpmn"], "pacdoc": doc_number, "pacdir": paciente.get("pacdir", "DIRECCIÓN NO ESPECIFICADA")})
     #         send_whatsapp_message(phone_to_reply, f"Gracias, {paciente['pacpmn']}. Un momento mientras consulto tus citas... 🔍")
-    #         response_pagos = requests.post(f"{LOLCLI_API_URL}/ListaPagosPendientes", json={"pachis": paciente["pachis"]}, headers=lolcli_headers)
+    #         response_pagos = requests.post(f"{g.lolcli_url}/ListaPagosPendientes", json={"pachis": paciente["pachis"]}, headers=lolcli_headers)
     #         if response_pagos.ok:
     #             pendientes = response_pagos.json().get("pendientes", [])
     #             if pendientes:
@@ -855,7 +917,7 @@ def webhook_handler():
     #                 session["state"] = "PENDING_PAYMENT_ACTION"
     #             else:
     #                 send_whatsapp_message(phone_to_reply, "¡Buenas noticias! No encontré ninguna cita *pendiente de pago* a tu nombre. 😊")
-    #                 user_sessions.pop(sender, None)
+    #                 user_sessions.pop(session_key, None)
     #         else:
     #             send_whatsapp_message(phone_to_reply, "😔 Tuvimos un inconveniente al consultar tus pagos. Por favor, intenta en unos minutos. 🙏")
     #     except Exception as e:
@@ -907,7 +969,7 @@ def webhook_handler():
                 phone_to_reply,
                 "⚠️ El DNI ingresado no es válido. Debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏",
             )
-            user_sessions[sender] = session
+            user_sessions[session_key] = session
             return jsonify({"status": "invalid_dni"})
 
         session["pacdoc"] = doc_number
@@ -916,7 +978,7 @@ def webhook_handler():
         try:
             payload = {"tidcod": tidcod, "pacdoc": doc_number}
             response = requests.post(
-                f"{LOLCLI_API_URL}/ValidarPaciente",
+                f"{g.lolcli_url}/ValidarPaciente",
                 json=payload,
                 headers=lolcli_headers,
             )
@@ -1091,7 +1153,7 @@ def webhook_handler():
             session["siscod"] = selected_option["siscod"]
             session["establishment_name"] = selected_option["sisent"]
             response = requests.post(
-                f"{LOLCLI_API_URL}/ListaServicios",
+                f"{g.lolcli_url}/ListaServicios",
                 json={"siscod": session["siscod"]},
                 headers=lolcli_headers,
             )
@@ -1120,7 +1182,7 @@ def webhook_handler():
             session["siscod"] = selected_option["siscod"]
             session["establishment_name"] = selected_option["sisent"]
             response = requests.post(
-                f"{LOLCLI_API_URL}/ListaServicios",
+                f"{g.lolcli_url}/ListaServicios",
                 json={"siscod": session["siscod"]},
                 headers=lolcli_headers,
             )
@@ -1150,7 +1212,7 @@ def webhook_handler():
             session["sernam"] = selected_option["serdes"]
             payload_medicos = {"siscod": session["siscod"], "sercod": session["sercod"]}
             response_medicos = requests.post(
-                f"{LOLCLI_API_URL}/ListaMedicos",
+                f"{g.lolcli_url}/ListaMedicos",
                 json=payload_medicos,
                 headers=lolcli_headers,
             )
@@ -1198,7 +1260,7 @@ def webhook_handler():
                 "fecha": today_str,
             }
             response = requests.post(
-                f"{LOLCLI_API_URL}/ListaCuposDisponibles",
+                f"{g.lolcli_url}/ListaCuposDisponibles",
                 json=payload,
                 headers=lolcli_headers,
             )
@@ -1238,18 +1300,24 @@ def webhook_handler():
                 f"Excelente, para el *{session['fecha_user']}*. Viendo las horas libres...",
             )
             try:
-                horarios_raw = requests.post(
-                    f"{LOLCLI_API_URL}/ListaCuposDetalle",
-                    json={
-                        "siscod": int(session["siscod"]),
-                        "sercod": session["sercod"],
-                        "medcod": session["medcod"],
-                        "fecha": session["fecha_api"],
-                        "invnum": 0,
-                    },
-                    headers=lolcli_headers,
-                ).json().get("horarios", [])
-                horarios = [h for h in horarios_raw if h.get("estado") == "D"] or PRESET_HORARIOS
+                horarios_raw = (
+                    requests.post(
+                        f"{g.lolcli_url}/ListaCuposDetalle",
+                        json={
+                            "siscod": int(session["siscod"]),
+                            "sercod": session["sercod"],
+                            "medcod": session["medcod"],
+                            "fecha": session["fecha_api"],
+                            "invnum": 0,
+                        },
+                        headers=lolcli_headers,
+                    )
+                    .json()
+                    .get("horarios", [])
+                )
+                horarios = [
+                    h for h in horarios_raw if h.get("estado") == "D"
+                ] or PRESET_HORARIOS
             except Exception as e:
                 print(f"ERROR ListaCuposDetalle (schedule): {e}")
                 horarios = PRESET_HORARIOS
@@ -1298,7 +1366,7 @@ def webhook_handler():
                 phone_to_reply,
                 "❓ Por favor, escribe 1 para Presencial 🏥 o 2 para Virtual 💻.",
             )
-            user_sessions[sender] = session
+            user_sessions[session_key] = session
             return jsonify({"status": "processed"})
 
         if session.get("cittip"):
@@ -1310,7 +1378,7 @@ def webhook_handler():
                 "cittip": session["cittip"],
             }
             response = requests.post(
-                f"{LOLCLI_API_URL}/ListaTarifario", json=payload, headers=lolcli_headers
+                f"{g.lolcli_url}/ListaTarifario", json=payload, headers=lolcli_headers
             )
             try:
                 response.raise_for_status()
@@ -1467,7 +1535,7 @@ def webhook_handler():
                 }
 
                 response = requests.post(
-                    f"{LOLCLI_API_URL}/RegistroCita",
+                    f"{g.lolcli_url}/RegistroCita",
                     json=payload_cita,
                     headers=lolcli_headers,
                 )
@@ -1482,7 +1550,7 @@ def webhook_handler():
                         time.sleep(2)
                         payload_pagos = {"pachis": session["pachis"]}
                         response_pagos = requests.post(
-                            f"{LOLCLI_API_URL}/ListaPagosPendientes",
+                            f"{g.lolcli_url}/ListaPagosPendientes",
                             json=payload_pagos,
                             headers=lolcli_headers,
                         )
@@ -1509,14 +1577,14 @@ def webhook_handler():
                         phone_to_reply,
                         f"No se pudo registrar la cita: {error_msg}. Escribe 'salir' y vuelve a intentarlo.",
                     )
-                    user_sessions.pop(sender, None)
+                    user_sessions.pop(session_key, None)
             except Exception as e:
                 send_whatsapp_message(
                     phone_to_reply,
                     "😔 Lo sentimos, ocurrió un error al registrar tu cita. Por favor, intenta de nuevo o llámanos directamente. 🙏",
                 )
                 print(f"Error en AWAITING_EMAIL_FOR_PAYMENT (RegistroCita): {e}")
-                user_sessions.pop(sender, None)
+                user_sessions.pop(session_key, None)
         else:
             send_whatsapp_message(
                 phone_to_reply,
@@ -1537,7 +1605,7 @@ def webhook_handler():
                 phone_to_reply,
                 "Para confirmar tu cita, por favor envíanos el mensaje completo de confirmación que recibiste al pagar (debe incluir el ID de pago). 📋",
             )
-            user_sessions[sender] = session
+            user_sessions[session_key] = session
             return jsonify({"status": "awaiting_proper_confirmation"})
 
         if token_to_check:
@@ -1554,7 +1622,7 @@ def webhook_handler():
                         "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
                     )
                     session["state"] = "AWAITING_POST_FLOW"
-                    user_sessions[sender] = session
+                    user_sessions[session_key] = session
                     return jsonify({"status": "completed_and_session_cleared"})
 
                 send_whatsapp_message(
@@ -1562,7 +1630,7 @@ def webhook_handler():
                     "✅ Recibido. Estamos verificando el estado de tu pago, un momento por favor... 🔍",
                 )
                 payload_consulta = {"token": token_to_check}
-                url_consulta = f"{LOLCLI_API_URL}/ConsultarLinkPago"
+                url_consulta = f"{g.lolcli_url}/ConsultarLinkPago"
                 response_consulta = requests.post(
                     url_consulta, json=payload_consulta, headers=lolcli_headers
                 )
@@ -1593,7 +1661,7 @@ def webhook_handler():
                         "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
                     )
                     session["state"] = "AWAITING_POST_FLOW"
-                    user_sessions[sender] = session
+                    user_sessions[session_key] = session
                     return jsonify({"status": "completed_and_session_cleared"})
                 else:
                     current_status = payment_data.get("estado_pago", "desconocido")
@@ -1643,12 +1711,12 @@ def webhook_handler():
             send_whatsapp_message(
                 phone_to_reply, "⚠️ El DNI debe tener exactamente 8 dígitos numéricos."
             )
-            user_sessions[sender] = session
+            user_sessions[session_key] = session
             return jsonify({"status": "invalid_dni"})
         try:
             pacientes = (
                 requests.post(
-                    f"{LOLCLI_API_URL}/ValidarPaciente",
+                    f"{g.lolcli_url}/ValidarPaciente",
                     json={"tidcod": tidcod, "pacdoc": doc_number},
                     headers=lolcli_headers,
                 )
@@ -1660,7 +1728,7 @@ def webhook_handler():
                     phone_to_reply,
                     "🔍 No encontramos ningún paciente registrado con ese documento. 🙏",
                 )
-                user_sessions.pop(sender, None)
+                user_sessions.pop(session_key, None)
                 return jsonify({"status": "patient_not_found"})
             paciente = pacientes[0]
             send_whatsapp_message(
@@ -1670,7 +1738,7 @@ def webhook_handler():
             # TODO: Replace "ListaCitasPaciente" with the confirmed endpoint name
             citas = (
                 requests.post(
-                    f"{LOLCLI_API_URL}/ListaCitasPacientes",
+                    f"{g.lolcli_url}/ListaCitasPacientes",
                     json={"nro_documento": doc_number},
                     headers=lolcli_headers,
                 )
@@ -1692,7 +1760,7 @@ def webhook_handler():
                 "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
             )
             session["state"] = "AWAITING_POST_FLOW"
-            user_sessions[sender] = session
+            user_sessions[session_key] = session
             return jsonify({"status": "consult_done"})
         except Exception as e:
             print(f"ERROR en AWAITING_DOC_NUMBER_FOR_CONSULT: {e}")
@@ -1727,7 +1795,7 @@ def webhook_handler():
             send_whatsapp_message(
                 phone_to_reply, "⚠️ El DNI debe tener exactamente 8 dígitos numéricos."
             )
-            user_sessions[sender] = session
+            user_sessions[session_key] = session
             return jsonify({"status": "invalid_dni"})
         try:
             send_whatsapp_message(
@@ -1735,7 +1803,7 @@ def webhook_handler():
             )
             citas = (
                 requests.post(
-                    f"{LOLCLI_API_URL}/ListaCitasPacientes",
+                    f"{g.lolcli_url}/ListaCitasPacientes",
                     json={"nro_documento": doc_number},
                     headers=lolcli_headers,
                 )
@@ -1746,7 +1814,7 @@ def webhook_handler():
                 send_whatsapp_message(
                     phone_to_reply, "📋 No tienes citas agendadas para reprogramar. 😊"
                 )
-                user_sessions.pop(sender, None)
+                user_sessions.pop(session_key, None)
                 return jsonify({"status": "no_appointments"})
             msg, formatted = format_appointments_list(
                 citas, "¿Cuál cita deseas reprogramar?"
@@ -1765,7 +1833,7 @@ def webhook_handler():
         selected_option = process_user_choice(message_text, session.get("options", []))
         if selected_option:
             session["citid_to_reschedule"] = selected_option.get("secuencia")
-            session["siscod"] = os.getenv("LOLCLI_ENTIDAD", "000000001")
+            session["siscod"] = g.clinic_config.get("default_siscod", 1)
             session["sercod"] = selected_option.get("sercod")
             session["medcod"] = selected_option.get("medcod")
             session["mednam"] = selected_option.get("medico", "")
@@ -1780,7 +1848,7 @@ def webhook_handler():
             today_str = date.today().strftime("%Y%m%d")
             all_cupos = (
                 requests.post(
-                    f"{LOLCLI_API_URL}/ListaCuposDisponibles",
+                    f"{g.lolcli_url}/ListaCuposDisponibles",
                     json={
                         "siscod": session["siscod"],
                         "sercod": session["sercod"],
@@ -1831,18 +1899,24 @@ def webhook_handler():
                 f"Perfecto, para el *{session['new_fecha_user']}*. Viendo horarios disponibles... ⏰",
             )
             try:
-                horarios_raw = requests.post(
-                    f"{LOLCLI_API_URL}/ListaCuposDetalle",
-                    json={
-                        "siscod": int(session["siscod"]),
-                        "sercod": session["sercod"],
-                        "medcod": session["medcod"],
-                        "fecha": session["new_fecha_api"],
-                        "invnum": int(session["citid_to_reschedule"]),
-                    },
-                    headers=lolcli_headers,
-                ).json().get("horarios", [])
-                horarios = [h for h in horarios_raw if h.get("estado") == "D"] or PRESET_HORARIOS
+                horarios_raw = (
+                    requests.post(
+                        f"{g.lolcli_url}/ListaCuposDetalle",
+                        json={
+                            "siscod": int(session["siscod"]),
+                            "sercod": session["sercod"],
+                            "medcod": session["medcod"],
+                            "fecha": session["new_fecha_api"],
+                            "invnum": int(session["citid_to_reschedule"]),
+                        },
+                        headers=lolcli_headers,
+                    )
+                    .json()
+                    .get("horarios", [])
+                )
+                horarios = [
+                    h for h in horarios_raw if h.get("estado") == "D"
+                ] or PRESET_HORARIOS
             except Exception as e:
                 print(f"ERROR ListaCuposDetalle (reschedule): {e}")
                 horarios = PRESET_HORARIOS
@@ -1911,12 +1985,14 @@ def webhook_handler():
 
                 print(f"INFO ActualizarCitaProtocolo payload: {payload_actualizar}")
                 resp = requests.post(
-                    f"{LOLCLI_API_URL}/ActualizarCitaProtocolo",
+                    f"{g.lolcli_url}/ActualizarCitaProtocolo",
                     json=payload_actualizar,
                     headers=lolcli_headers,
                 )
                 result = resp.json()
-                print(f"INFO ActualizarCitaProtocolo response {resp.status_code}: {result}")
+                print(
+                    f"INFO ActualizarCitaProtocolo response {resp.status_code}: {result}"
+                )
                 if resp.ok and result.get("status") == "success":
                     send_whatsapp_message(
                         phone_to_reply,
@@ -1930,7 +2006,7 @@ def webhook_handler():
                         "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
                     )
                     session["state"] = "AWAITING_POST_FLOW"
-                    user_sessions[sender] = session
+                    user_sessions[session_key] = session
                     return jsonify({"status": "rescheduled"})
                 else:
                     raise Exception(
@@ -1961,11 +2037,13 @@ def webhook_handler():
                 "Escribe *'continuar'* para volver al menú o *'salir'* para terminar la sesión. 😊",
             )
 
-    user_sessions[sender] = session
+    user_sessions[session_key] = session
     return jsonify({"status": "processed"})
 
 
-preload_global_lists()
+load_clinics()
+for _cid, _cfg in CLINICS.items():
+    preload_clinic_lists(_cid, _cfg)
 cleanup_thread = threading.Thread(target=session_cleanup_task, daemon=True)
 cleanup_thread.start()
 reminder_thread = threading.Thread(target=reminder_task, daemon=True)
@@ -1973,5 +2051,6 @@ reminder_thread.start()
 
 if __name__ == "__main__":
     from waitress import serve
+
     port = int(os.getenv("PORT", 5001))
     serve(app, host="0.0.0.0", port=port)
