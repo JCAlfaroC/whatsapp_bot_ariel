@@ -42,8 +42,6 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 LOLCLI_API_URL = os.getenv("LOLCLI_API_URL")  # clinic system
 LOLCLI_ENTIDAD = os.getenv("LOLCLI_ENTIDAD")
 LOLCLI_API_TOKEN = os.getenv("LOLCLI_API_TOKEN")
-DNI_API_URL = "https://my.apidev.pro/api/dni"
-DNI_API_TOKEN = os.getenv("DNI_API_TOKEN")  # RENIEC lookup
 
 user_sessions = {}  # stores all active conversations in RAM
 lista_sedes_global = []  # clinic branches (loaded once at startup)
@@ -52,40 +50,6 @@ lista_documentos_global = []  # document types (loaded once at startup)
 # --- Configuración de Tiempos de Inactividad ---
 INACTIVITY_REMINDER_PERIOD = 5 * 60
 SESSION_EXPIRATION_PERIOD = 10 * 60
-
-
-# --- Funciones de Consulta a APIs Externas ---
-def consultar_reniec(dni):
-    if not DNI_API_TOKEN:
-        print("ADVERTENCIA: DNI_API_TOKEN no está configurado.")
-        return {"success": False}
-    headers = {"Authorization": f"Bearer {DNI_API_TOKEN}"}
-    payload = {"dni": dni}
-    print(f"INFO: Consultando DNI {dni} en la API externa.")
-    try:
-        response = requests.post(DNI_API_URL, json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        dni_data = data.get("data", {})
-        if data.get("success") and dni_data and dni_data.get("nombres"):
-            return {
-                "success": True,
-                "pacpat": dni_data.get("apellido_paterno"),
-                "pacmat": dni_data.get("apellido_materno"),
-                "pacnam": dni_data.get("nombres"),
-                "pacfen": dni_data.get("fecha_nacimiento"),
-                "sexcod": "MA"
-                if dni_data.get("sexo", "").upper() == "MASCULINO"
-                else "FE",
-            }
-        else:
-            print(
-                f"ADVERTENCIA: API de DNI no encontró datos para {dni}. Respuesta: {data}"
-            )
-            return {"success": False}
-    except Exception as e:
-        print(f"ERROR: La consulta a la API de DNI falló: {e}")
-        return {"success": False}
 
 
 # --- Tarea en segundo plano y funciones auxiliares ---
@@ -129,49 +93,6 @@ def session_cleanup_task():
                     "👋 ¡Hola! Notamos que dejaste tu cita a medias. ¿Deseas continuar? Si no respondemos pronto, tu sesión se cerrará automáticamente. 🕐",
                 )
                 session["reminder_sent"] = True
-
-
-def send_mail_reminder(reminder):
-    import smtplib
-    from email.mime.miltipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
-    smtp_server = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
-    smtp_port = int(os.getenv("EMAIL_SMTP_PORT", 587))
-    smtp_user = os.getenv("EMAIL_USER")
-    smtp_password = os.getenv("EMAIL_PASSWORD")
-
-    if not smtp_user or not smtp_password:
-        print("ADVERTENCIA: Credenciales de email no configuradas")
-        return
-
-    msg = MIMEMultipart()
-    msg["From"] = smtp_user
-    msg["To"] = reminder["email"]
-    msg["Subject"] = "Recordatorio de tu cita mėdica - LOLIMSA"
-
-    body = (
-        f"Estimado/a {reminder['patient_name']}, \n\n"
-        f"Le recordamos que tiene una cita programada para mañana:\n\n"
-        f" 👨‍⚕️ Mėdico:          {reminder['doctor_name']}\n"
-        f" 🩺 Especialidad:    {reminder['speciality']}\n"
-        f" 🏥 Sede:            {reminder['sede']}\n"
-        f" 🗓️ Fecha y hora     {reminder['appointment_datetime']}\n\n"
-        f"Por favor, presėntese 15 minutos antes.\n\n"
-        f"Saludos,\nLOLIMSA"
-    )
-
-    msg.attach(MIMEText(body, "plain"))
-
-    try:
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-        server.login(smtp_user, smtp_password)
-        server.sendmail(smtp_user, reminder["email"], msg.as_string())
-        server.quit()
-        print(f"INFO: Email de recordatorio enviado a {reminder['email']}")
-    except Exception as e:
-        print(f"ERROR al enviar email de recordatorio: {e}")
 
 
 def save_reminder(session):
@@ -239,7 +160,7 @@ def reminder_task():
 
             if 23 <= hours_until <= 25:
                 whatsapp_msg = (
-                    f"🔔 *Recordatorio de cita -- LOLIMSA*\n\n"
+                    f"🔔 *Recordatorio de cita -- ARIE*\n\n"
                     f"Hola {reminder['patient_name']}, le recordamos su cita de mañana:\n\n"
                     f"👨‍⚕️ *Médico:* {reminder['doctor_name']}\n"
                     f"🩺 *Especialidad:* {reminder['specialty']}\n"
@@ -375,7 +296,7 @@ def replay_state_prompt(state, session, phone_to_reply, headers):
         send_whatsapp_message(phone_to_reply, reply)
     elif state == "AWAITING_SPECIALTY":
         response = requests.post(
-            f"{LOLCLI_API_URL}/ListaServicios",
+            f"{LOLCLI_API_URL}/ListaServiciosWsp",
             json={"siscod": session["siscod"]},
             headers=headers,
         )
@@ -441,7 +362,13 @@ def generate_payment_link_and_send(session, phone_to_reply, headers):
         invnum_val = session.get("invnum_cita")
         invnum = int(invnum_val) if invnum_val else 0
 
-        # Nuevo payload con los campos estrictamente solicitados por la API
+        # TODO: confirmar con LOLIMSA si "cliente": "consultoria" es un
+        # identificador de entorno/backend fijo para todos los tenants de
+        # LOLCLI, o si ARIE necesita su propio valor aquí -- no se cambia a
+        # ciegas porque un valor incorrecto podría romper la generación del
+        # link de pago. También confirmar si se requiere algún parámetro
+        # explícito para forzar la pasarela Niubiz (no se ve ninguno en este
+        # payload).
         payload_pago = {
             "cliente": "consultoria",
             "invnum": invnum,
@@ -513,83 +440,63 @@ def continue_appointment_flow(session, phone_to_reply, lolcli_headers):
     send_whatsapp_message(phone_to_reply, reply)
 
 
-def register_new_patient(session, phone_to_reply, headers):
-    try:
-        data = session["new_patient_data"]
-
-        # El campo pacfen ya debería estar en formato AAAA-MM-DD
-        fecha_nac_original = data.get("pacfen")
-
-        payload_registro = {
-            "tidcod": data.get("tidcod"),
-            "pacdoc": data.get("pacdoc"),
-            "pacpat": data.get("pacpat"),
-            "pacmat": data.get("pacmat"),
-            "pacnam": data.get("pacnam"),
-            "pacfen": fecha_nac_original,
-            "sexcod": data.get("sexcod"),
-            "pactel": data.get("pactel"),
-            "pacdir": data.get("pacdir"),
-            "pacmail": data.get("pacmail"),
-            "codtas": "TI",
-            "ubicod": "150137",
-            "siscod_fil": 2,
-        }
-
-        print(f"INFO: Registrando nuevo paciente con payload: {payload_registro}")
-        response_registro = requests.post(
-            f"{LOLCLI_API_URL}/RegistroPaciente", json=payload_registro, headers=headers
+def present_specialty_or_force_reeval(session, phone_to_reply, lolcli_headers, servicios, intro_text):
+    if session.get("flow") == "reeval":
+        match = next(
+            (s for s in servicios if REEVAL_SERVICE_NAME in normalize_text(s.get("serdes", ""))),
+            None,
         )
-
-        if response_registro.ok and response_registro.json().get("status") == "success":
-            time.sleep(1)
-            payload_validacion = {
-                "tidcod": data.get("tidcod"),
-                "pacdoc": data.get("pacdoc"),
-            }
-            response_validacion = requests.post(
-                f"{LOLCLI_API_URL}/ValidarPaciente",
-                json=payload_validacion,
-                headers=headers,
-            )
-            pacientes = response_validacion.json().get("paciente", [])
-
-            if pacientes:
-                paciente = pacientes[0]
-                session["pachis"] = paciente["pachis"]
-                session["paciente_nombre"] = paciente["pacpmn"]
-                session.pop("new_patient_data", None)
-                return True
-            else:
-                raise Exception(
-                    "No se pudo obtener el historial del paciente recién registrado."
-                )
-        else:
-            error_msg = response_registro.json().get("message", "Error desconocido")
+        if not match:
             send_whatsapp_message(
-                phone_to_reply, f"Hubo un problema al registrarte: {error_msg}."
+                phone_to_reply,
+                f"😔 *{session['establishment_name']}* no ofrece reevaluación médica de Medicina Física y "
+                "Rehabilitación. Escribe retroceder para elegir otra sede o salir para cancelar.",
             )
-            user_sessions.pop(session["sender"], None)
-            return False
-    except Exception as e:
-        print(f"ERROR en register_new_patient: {e}")
+            if session.get("history"):
+                session["history"].pop()
+            return
+        session["sercod"] = match["sercod"]
+        session["sernam"] = match["serdes"]
+        fetch_and_prompt_doctors(session, phone_to_reply, lolcli_headers)
+        return
+
+    reply, formatted_options = format_menu(intro_text, servicios, "sercod", "serdes")
+    session["options"] = formatted_options
+    session["state"] = "AWAITING_SPECIALTY"
+    send_whatsapp_message(phone_to_reply, reply)
+
+
+def fetch_and_prompt_doctors(session, phone_to_reply, lolcli_headers):
+    payload_medicos = {"siscod": session["siscod"], "sercod": session["sercod"]}
+    response_medicos = requests.post(
+        f"{LOLCLI_API_URL}/ListaMedicos",
+        json=payload_medicos,
+        headers=lolcli_headers,
+    )
+    medicos = response_medicos.json().get("medicos", [])
+    if not medicos:
         send_whatsapp_message(
             phone_to_reply,
-            "😔 Ocurrió un error inesperado durante tu registro. Por favor, contacta a nuestro equipo de soporte. 🙏",
+            f"Lo sentimos, no hay doctores para *{session['sernam']}* en esta sede.",
         )
-        user_sessions.pop(session["sender"], None)
-        return False
+        send_whatsapp_message(
+            phone_to_reply,
+            "Escribe retroceder para elegir otra especialidad o salir para cancelar.",
+        )
+        if session.get("history"):
+            session["history"].pop()
+    else:
+        reply, formatted_options = format_menu(
+            "Estos son los doctores con espacio:", medicos, "medcod", "mednam"
+        )
+        session["options"] = formatted_options
+        session["state"] = "AWAITING_DOCTOR"
+        send_whatsapp_message(phone_to_reply, reply)
 
 
 def show_final_summary(session, phone_to_reply):
     patient_name = session.get("paciente_nombre")
-    if not patient_name and "new_patient_data" in session:
-        p_data = session["new_patient_data"]
-        patient_name = f"{p_data.get('pacnam', '')} {p_data.get('pacpat', '')} {p_data.get('pacmat', '')}".strip()
-
     domicilio = session.get("pacdir")
-    if not domicilio and "new_patient_data" in session:
-        domicilio = session["new_patient_data"].get("pacdir", "")
 
     summary = (
         f"¡Casi listo! ✨ Por favor, revisa que todo esté correcto:\n\n"
@@ -618,12 +525,6 @@ def show_final_summary(session, phone_to_reply):
     session["state"] = "AWAITING_CONFIRMATION"
 
 
-# --- TODO: Confirm endpoint names with LOLCLI team ---
-# LIST_CITAS_ENDPOINT   = "ListaCitasPaciente"  payload: { "pachis": str }
-# ANULAR_CITA_ENDPOINT  = "AnularCita"           payload: { "citid": str }
-# INVNUM_INFO_ENDPOINT  = "<pending>"            payload: { "invnum": int }  ← payment receipt info
-
-
 DAYS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 MONTHS_ES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
@@ -640,9 +541,48 @@ def format_date_es(date_obj):
     return f"{DAYS_ES[date_obj.weekday()]}, {date_obj.day:02d} de {MONTHS_ES[date_obj.month]}"
 
 
-def format_appointments_list(citas, title):
+# Tipos de cita que ARIE no considera "citas" para efectos de consulta/reprogramación.
+INFORME_SERVICE_KEYWORDS = ("informe médico general", "informe médico integral", "informe de evaluación")
+
+CONSULT_TOP_N = 10
+
+# Servicio forzado para el flujo "Agendar reevaluación médica" (menú opción 4).
+REEVAL_SERVICE_NAME = "medicina fisica y rehabilitacion"
+
+# TODO: confirmar con LOLIMSA si estos son sub-servicios (ListaServiciosWsp) o
+# tarifas (ListaTarifarioWsp) dentro de "Medicina Física y Rehabilitación" --
+# se asume que son entradas de tarifario, ya que así aparecían nombradas en el
+# comprobante de requerimientos (p.ej. "Aplicación TB - 1").
+REEVAL_EXCLUDED_TARIFA_KEYWORDS = (
+    "neuropediatria",
+    "psiquiatria infantil",
+    "informe",
+    "valoracion espastica",
+    "aplicacion tb",
+    "post aplicacion tb",
+)
+
+
+def _is_informe_type(cita):
+    servicio = normalize_text(cita.get("servicio", ""))
+    return any(normalize_text(kw) in servicio for kw in INFORME_SERVICE_KEYWORDS)
+
+
+def format_appointments_list(citas, title, mode="consult"):
+    # ListarCitasPacientesWsp a veces devuelve [{}] (un objeto vacío) en vez de []
+    # cuando no hay citas -- se descartan las entradas sin datos reales.
+    citas = [c for c in citas if c]
+
+    if mode == "consult":
+        # TODO: confirmar con LOLIMSA si el filtro de "Informes" y el tope de
+        # Top-10/mes-actual ya se aplican del lado del servidor en
+        # ListarCitasPacientesWsp (tipo=C); por ahora se filtra/limita aquí.
+        citas = [c for c in citas if not _is_informe_type(c)]
+        citas = citas[:CONSULT_TOP_N]
+
     msg = f"{title}\n\n"
     formatted = []
+    today = date.today()
     for i, cita in enumerate(citas, 1):
         fecha_raw = cita.get("fecha", "")
         hora_raw = cita.get("hora", "")
@@ -667,11 +607,36 @@ def format_appointments_list(citas, title):
         else:
             hora = "Hora no disponible"
 
-        msg += (
-            f"*{i}.* 🗓️ {fecha} — ⏰ {hora}\n"
-            f"   🩺 {cita.get('servicio', '')}\n"
-            f"   👨‍⚕️ {cita.get('medico', '')}\n\n"
-        )
+        es_hoy = bool(date_obj) and date_obj.date() == today
+        fecha_hora_line = f"🗓️ {fecha} — ⏰ {hora}"
+        if es_hoy:
+            fecha_hora_line = f"*{fecha_hora_line} (HOY)*"
+
+        if mode == "consult":
+            # TODO: nombres de campo (sede/modalidad/estado de pago) son un supuesto
+            # -- confirmar con LOLIMSA la forma real de una fila de ListarCitasPacientesWsp.
+            sede = cita.get("sede", cita.get("establecimiento", ""))
+            modalidad = cita.get("modalidad", {"P": "Presencial", "V": "Teleconsulta"}.get(cita.get("cittip", ""), ""))
+            tarifa = cita.get("tarifa", cita.get("tardes", ""))
+            estado_pago = cita.get("estado_pago", cita.get("estadopago", ""))
+
+            msg += (
+                f"*{i}.* {fecha_hora_line}\n"
+                f"   🏥 {sede}\n"
+                f"   🩺 {cita.get('servicio', '')}\n"
+                f"   👨‍⚕️ {cita.get('medico', '')}\n"
+                f"   🏷️ {tarifa}"
+                + (f" — {modalidad}" if modalidad else "")
+                + "\n"
+                + (f"   💳 Estado de pago: {estado_pago}\n" if estado_pago else "")
+                + "\n"
+            )
+        else:
+            msg += (
+                f"*{i}.* {fecha_hora_line}\n"
+                f"   🩺 {cita.get('servicio', '')}\n"
+                f"   👨‍⚕️ {cita.get('medico', '')}\n\n"
+            )
         formatted.append({"id": i, "data": cita})
     return msg, formatted
 
@@ -682,7 +647,7 @@ def show_main_menu(phone_to_reply, session):
         "*1.* 📅 Agendar una nueva cita\n"
         "*2.* 🔍 Consultar mis citas\n"
         "*3.* 🔄 Reprogramar una cita\n"
-        # "*4.* 💳 Pagar cita pendiente\n\n"  # TODO: re-enable when ready
+        "*4.* 🩺 Agendar reevaluación médica\n\n"
         "_Escribe el número de tu elección._"
     )
     session["state"] = "AWAITING_MAIN_MENU"
@@ -747,7 +712,7 @@ def webhook_handler():
         session["history"] = ["START"]
         send_whatsapp_message(
             phone_to_reply,
-            "👋 ¡Hola! Bienvenido/a a LOLIMSA. Soy tu asistente virtual y estoy aquí para ayudarte. 😊",
+            "👋 ¡Hola! Bienvenido/a a ARIE. Soy tu asistente virtual y estoy aquí para ayudarte. 😊",
         )
         show_main_menu(phone_to_reply, session)
     elif state == "AWAITING_MAIN_MENU":
@@ -792,92 +757,23 @@ def webhook_handler():
             session["state"] = "AWAITING_DOC_NUMBER_FOR_RESCHEDULE"
             send_whatsapp_message(phone_to_reply, "🔄 Para reprogramar tu cita, ingresa tu número de D.N.I.")
 
-        # elif choice in ["4", "pagar", "pago pendiente"]:  # TODO: re-enable when ready
-        #     reply, opts = format_menu(
-        #         "Para pagar tu cita, selecciona tu tipo de documento:",
-        #         lista_documentos_global,
-        #         "tidcod",
-        #         "tiddes",
-        #     )
-        #     session["options"] = opts
-        #     session["state"] = "AWAITING_DOC_TYPE_FOR_PAYMENT"
-        #     send_whatsapp_message(phone_to_reply, reply)
+        elif choice in ["4", "reevaluacion", "reevaluación", "reevaluación médica"]:
+            reply, opts = format_menu(
+                "Para agendar tu reevaluación médica, selecciona tu tipo de documento:",
+                lista_documentos_global,
+                "tidcod",
+                "tiddes",
+            )
+            session["options"] = opts
+            session["flow"] = "reeval"
+            session["state"] = "AWAITING_DOC_TYPE_FOR_REEVAL"
+            send_whatsapp_message(phone_to_reply, reply)
 
         else:
             send_whatsapp_message(
                 phone_to_reply,
                 "❓ Por favor, escribe *1*, *2*, *3* o *4* para elegir una opción. 😊",
             )
-
-    # elif state == "AWAITING_DOC_TYPE_FOR_PAYMENT":  # TODO: re-enable when ready
-    #     selected_option = process_user_choice(
-    #         message_text, session.get("options", []), "tiddes"
-    #     )
-    #     if selected_option:
-    #         session["tidcod"] = selected_option["tidcod"]
-    #         session["tiddes"] = selected_option["tiddes"]
-    #         send_whatsapp_message(
-    #             phone_to_reply,
-    #             f"Entendido. Ahora, por favor, ingresa tu número de {selected_option['tiddes']}.",
-    #         )
-    #         session["state"] = "AWAITING_DOC_NUMBER_FOR_PAYMENT"
-    #     else:
-    #         send_whatsapp_message(
-    #             phone_to_reply,
-    #             "❓ No reconocí esa opción. Por favor, escribe el número de tu elección de la lista. 🙏",
-    #         )
-
-    # elif state == "AWAITING_DOC_NUMBER_FOR_PAYMENT":  # TODO: re-enable when ready
-    #     doc_number = message_text.strip()
-    #     tidcod = session.get("tidcod")
-    #     if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
-    #         send_whatsapp_message(phone_to_reply, "⚠️ El DNI debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏")
-    #         user_sessions[sender] = session
-    #         return jsonify({"status": "invalid_dni_for_payment"})
-    #     try:
-    #         pacientes = requests.post(f"{LOLCLI_API_URL}/ValidarPaciente", json={"tidcod": tidcod, "pacdoc": doc_number}, headers=lolcli_headers).json().get("paciente", [])
-    #         if not pacientes:
-    #             send_whatsapp_message(phone_to_reply, "🔍 No encontramos ningún paciente registrado con ese documento. 📞")
-    #             user_sessions.pop(sender, None)
-    #             return jsonify({"status": "patient_not_found_for_payment"})
-    #         paciente = pacientes[0]
-    #         session.update({"pachis": paciente["pachis"], "paciente_nombre": paciente["pacpmn"], "pacdoc": doc_number, "pacdir": paciente.get("pacdir", "DIRECCIÓN NO ESPECIFICADA")})
-    #         send_whatsapp_message(phone_to_reply, f"Gracias, {paciente['pacpmn']}. Un momento mientras consulto tus citas... 🔍")
-    #         response_pagos = requests.post(f"{LOLCLI_API_URL}/ListaPagosPendientes", json={"pachis": paciente["pachis"]}, headers=lolcli_headers)
-    #         if response_pagos.ok:
-    #             pendientes = response_pagos.json().get("pendientes", [])
-    #             if pendientes:
-    #                 pago_reciente = pendientes[-1]
-    #                 session["prfnum_cita"] = pago_reciente.get("prfnum")
-    #                 session["invnum_cita"] = pago_reciente.get("invnum")
-    #                 session["costo_total"] = float(pago_reciente.get("prfppac", 0.0))
-    #                 send_whatsapp_message(phone_to_reply, f"Encontré una reserva pendiente de pago por *S/ {session['costo_total']:.2f}*.\n\nEscribe *'Pagar'* para generar un nuevo enlace de pago.")
-    #                 session["state"] = "PENDING_PAYMENT_ACTION"
-    #             else:
-    #                 send_whatsapp_message(phone_to_reply, "¡Buenas noticias! No encontré ninguna cita *pendiente de pago* a tu nombre. 😊")
-    #                 user_sessions.pop(sender, None)
-    #         else:
-    #             send_whatsapp_message(phone_to_reply, "😔 Tuvimos un inconveniente al consultar tus pagos. Por favor, intenta en unos minutos. 🙏")
-    #     except Exception as e:
-    #         send_whatsapp_message(phone_to_reply, "😔 Ocurrió un error inesperado. Por favor, intenta de nuevo en unos momentos. 🙏")
-    #         print(f"Error en AWAITING_DOC_NUMBER_FOR_PAYMENT: {e}")
-
-    # elif state == "PENDING_PAYMENT_ACTION":  # TODO: re-enable when ready
-    #     if "pagar" in message_text.lower():
-    #         session["tdofac"] = "BO"
-    #         send_whatsapp_message(phone_to_reply, "💌 Perfecto. Para enviarte el comprobante, necesitamos tu correo electrónico. Por favor, escríbelo a continuación.")
-    #         session["state"] = "AWAITING_EMAIL_FOR_PENDING_PAYMENT"
-    #     else:
-    #         send_whatsapp_message(phone_to_reply, "💳 Cuando estés listo/a, escribe Pagar para obtener tu enlace de pago. Si prefieres cancelar, escribe salir. 😊")
-
-    # elif state == "AWAITING_EMAIL_FOR_PENDING_PAYMENT":  # TODO: re-enable when ready
-    #     email = message_text.strip()
-    #     if "@" in email and "." in email:
-    #         session["email"] = email
-    #         send_whatsapp_message(phone_to_reply, "⏳ Gracias. Estamos generando tu enlace de pago personalizado, un momento por favor...")
-    #         generate_payment_link_and_send(session, phone_to_reply, lolcli_headers)
-    #     else:
-    #         send_whatsapp_message(phone_to_reply, "📧 El correo ingresado no parece ser válido. Por favor, verifica que tenga el formato correcto (ejemplo: nombre@correo.com).")
 
     elif state == "AWAITING_DOC_TYPE":
         selected_option = process_user_choice(
@@ -916,8 +812,84 @@ def webhook_handler():
         try:
             payload = {"tidcod": tidcod, "pacdoc": doc_number}
             response = requests.post(
-                f"{LOLCLI_API_URL}/ValidarPaciente",
+                f"{LOLCLI_API_URL}/ValidarPacienteWsp",
                 json=payload,
+                headers=lolcli_headers,
+            )
+            pacientes = response.json().get("paciente", [])
+
+            if pacientes:
+                paciente = pacientes[0]
+                session.update(
+                    {
+                        "pachis": paciente["pachis"],
+                        "paciente_nombre": paciente["pacpmn"],
+                    }
+                )
+                send_whatsapp_message(
+                    phone_to_reply, f"¡Hola de nuevo, {paciente['pacpmn']}!"
+                )
+                continue_appointment_flow(session, phone_to_reply, lolcli_headers)
+            else:
+                # ARIE no permite crear pacientes nuevos por WhatsApp: si no está
+                # registrado en la clínica, se le pide acercarse presencialmente.
+                send_whatsapp_message(
+                    phone_to_reply,
+                    "🔍 No encontramos ningún paciente registrado con ese documento. "
+                    "Para agendar una cita, por favor acércate personalmente a tu sede para registrarte. 📞",
+                )
+                user_sessions.pop(sender, None)
+        except Exception as e:
+            send_whatsapp_message(
+                phone_to_reply,
+                "😔 Tuvimos un inconveniente al verificar tu documento. Por favor, intenta de nuevo. 🙏",
+            )
+            print(f"Error en AWAITING_DOC_NUMBER: {e}")
+
+    # ── REEVALUACIÓN MÉDICA FLOW ─────────────────────────────────────────────
+    # Agendamiento de cita de reevaluación (Medicina Física y Rehabilitación),
+    # con cobro previo. Reutiliza los mismos estados de sede/médico/fecha/hora
+    # que el flujo genérico (AWAITING_ESTABLISHMENT en adelante se ramifica
+    # por session["flow"] == "reeval").
+
+    elif state == "AWAITING_DOC_TYPE_FOR_REEVAL":
+        selected_option = process_user_choice(
+            message_text, session.get("options", []), "tiddes"
+        )
+        if selected_option:
+            session["tidcod"] = selected_option["tidcod"]
+            session["tiddes"] = selected_option["tiddes"]
+            session.setdefault("history", []).append("AWAITING_DOC_TYPE_FOR_REEVAL")
+            send_whatsapp_message(
+                phone_to_reply,
+                f"Entendido. Ahora, por favor, ingresa tu número de {selected_option['tiddes']}.",
+            )
+            session["state"] = "AWAITING_DOC_NUMBER_FOR_REEVAL"
+        else:
+            send_whatsapp_message(
+                phone_to_reply,
+                "❓ No reconocí esa opción. Por favor, escribe el número de tu elección de la lista. 🙏",
+            )
+
+    elif state == "AWAITING_DOC_NUMBER_FOR_REEVAL":
+        doc_number = message_text.strip()
+        tidcod = session.get("tidcod")
+
+        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
+            send_whatsapp_message(
+                phone_to_reply,
+                "⚠️ El DNI ingresado no es válido. Debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏",
+            )
+            user_sessions[sender] = session
+            return jsonify({"status": "invalid_dni"})
+
+        session["pacdoc"] = doc_number
+        session.setdefault("history", []).append("AWAITING_DOC_NUMBER_FOR_REEVAL")
+
+        try:
+            response = requests.post(
+                f"{LOLCLI_API_URL}/ValidarPacienteWsp",
+                json={"tidcod": tidcod, "pacdoc": doc_number},
                 headers=lolcli_headers,
             )
             pacientes = response.json().get("paciente", [])
@@ -937,150 +909,16 @@ def webhook_handler():
             else:
                 send_whatsapp_message(
                     phone_to_reply,
-                    "📋 Veo que es tu primera vez con nosotros. ¡Bienvenido/a! Vamos a crear tu ficha de paciente, es muy rápido. 😊",
+                    "🔍 No encontramos ningún paciente registrado con ese documento. "
+                    "Para agendar una cita, por favor acércate personalmente a tu sede para registrarte. 📞",
                 )
-                session["new_patient_data"] = {"tidcod": tidcod, "pacdoc": doc_number}
-
-                if tidcod == "01":
-                    send_whatsapp_message(
-                        phone_to_reply,
-                        "🔍 Consultando tu información para agilizar el registro... Un momento, por favor.",
-                    )
-                    reniec_data = consultar_reniec(doc_number)
-                    if reniec_data.get("success"):
-                        session["new_patient_data"].update(reniec_data)
-                        full_name = f"{reniec_data.get('pacnam', '')} {reniec_data.get('pacpat', '')} {reniec_data.get('pacmat', '')}".strip()
-                        send_whatsapp_message(
-                            phone_to_reply, f"Encontramos a: *{full_name}*."
-                        )
-
-                        if not reniec_data.get("pacfen"):
-                            send_whatsapp_message(
-                                phone_to_reply,
-                                "Para continuar, por favor, confírmame tu fecha de nacimiento. 🎂\n\n_Usa el formato AAAA-MM-DD, por ejemplo: 1981-05-18_",
-                            )
-                            session["state"] = "AWAITING_REG_BIRTHDATE"
-                        else:
-                            send_whatsapp_message(
-                                phone_to_reply,
-                                "📱 Casi listo. Por favor, indícanos tu número de celular.",
-                            )
-                            session["state"] = "AWAITING_REG_PHONE"
-                    else:
-                        send_whatsapp_message(
-                            phone_to_reply,
-                            "📝 No pudimos validar tu DNI automáticamente, pero no te preocupes. Te haré unas preguntas rápidas. Comenzemos: Cual es tu apellido paterno?",
-                        )
-                        session["state"] = "AWAITING_MANUAL_PATPAT"
-                else:
-                    send_whatsapp_message(
-                        phone_to_reply,
-                        "📝 Para registrarte necesitamos algunos datos basicos. Comencemos: cual es tu apellido paterno?",
-                    )
-                    session["state"] = "AWAITING_MANUAL_PATPAT"
+                user_sessions.pop(sender, None)
         except Exception as e:
             send_whatsapp_message(
                 phone_to_reply,
                 "😔 Tuvimos un inconveniente al verificar tu documento. Por favor, intenta de nuevo. 🙏",
             )
-            print(f"Error en AWAITING_DOC_NUMBER: {e}")
-
-    elif state == "AWAITING_REG_BIRTHDATE":
-        session["new_patient_data"]["pacfen"] = message_text.strip()
-        send_whatsapp_message(
-            phone_to_reply,
-            "✅ Gracias por confirmar tu fecha de nacimiento. Ahora, por favor, indícanos tu número de celular. 📱",
-        )
-        session["state"] = "AWAITING_REG_PHONE"
-
-    elif state == "AWAITING_MANUAL_PATPAT":
-        session["new_patient_data"]["pacpat"] = message_text.strip().upper()
-        send_whatsapp_message(
-            phone_to_reply, "✅ Gracias. Ahora, ¿cuál es tu apellido materno?"
-        )
-        session["state"] = "AWAITING_MANUAL_PACMAT"
-
-    elif state == "AWAITING_MANUAL_PACMAT":
-        session["new_patient_data"]["pacmat"] = message_text.strip().upper()
-        send_whatsapp_message(
-            phone_to_reply, "✅ Entendido. Por favor, escribe tus nombres completos."
-        )
-        session["state"] = "AWAITING_MANUAL_PACNAM"
-
-    elif state == "AWAITING_MANUAL_PACNAM":
-        session["new_patient_data"]["pacnam"] = message_text.strip().upper()
-        send_whatsapp_message(
-            phone_to_reply,
-            "¡Casi listo! Para continuar, por favor, ¿cuál es tu fecha de nacimiento? 🎂\n\n_Usa el formato AAAA-MM-DD, por ejemplo: 1981-05-18_",
-        )
-        session["state"] = "AWAITING_MANUAL_PACFEN"
-
-    elif state == "AWAITING_MANUAL_PACFEN":
-        session["new_patient_data"]["pacfen"] = message_text.strip()
-        reply, opts = format_menu(
-            "Gracias. Por favor, selecciona tu sexo:",
-            [
-                {"id": 1, "code": "MA", "name": "Masculino"},
-                {"id": 2, "code": "FE", "name": "Femenino"},
-            ],
-            "code",
-            "name",
-        )
-        session["options"] = opts
-        session["state"] = "AWAITING_MANUAL_SEXCOD"
-        send_whatsapp_message(phone_to_reply, reply)
-
-    elif state == "AWAITING_MANUAL_SEXCOD":
-        selected_option = process_user_choice(
-            message_text, session.get("options", []), "name"
-        )
-        if selected_option:
-            session["new_patient_data"]["sexcod"] = selected_option["code"]
-            send_whatsapp_message(
-                phone_to_reply,
-                "✅ Perfecto. Ahora, por favor, escribe tu número de celular. 📱",
-            )
-            session["state"] = "AWAITING_REG_PHONE"
-        else:
-            send_whatsapp_message(
-                phone_to_reply,
-                "❓ Por favor, escribe 1 para Masculino o 2 para Femenino.",
-            )
-
-    elif state == "AWAITING_REG_PHONE":
-        phone = message_text.strip()
-        if phone.isdigit() and len(phone) >= 9:
-            session["new_patient_data"]["pactel"] = phone
-            send_whatsapp_message(
-                phone_to_reply,
-                "✅ Gracias. Ahora, por favor, escribe tu correo electrónico. 📧",
-            )
-            session["state"] = "AWAITING_REG_EMAIL"
-        else:
-            send_whatsapp_message(
-                phone_to_reply,
-                "⚠️ El número ingresado no parece ser válido. Por favor, escribe un número de celular con al menos 9 dígitos. 📱",
-            )
-
-    elif state == "AWAITING_REG_EMAIL":
-        email = message_text.strip()
-        if "@" in email and "." in email:
-            session["new_patient_data"]["pacmail"] = email
-            send_whatsapp_message(
-                phone_to_reply,
-                "✅ Casi listo. Por último, necesitamos tu dirección de domicilio. 🏠",
-            )
-            session["state"] = "AWAITING_REG_ADDRESS"
-        else:
-            send_whatsapp_message(
-                phone_to_reply,
-                "📧 El correo ingresado no es valido. Por favor, verifica que tenga el formato correcto. Ejemplo: nombre@correo.com",
-            )
-
-    elif state == "AWAITING_REG_ADDRESS":
-        address = message_text.strip()
-        session["new_patient_data"]["pacdir"] = address
-        continue_appointment_flow(session, phone_to_reply, lolcli_headers)
+            print(f"Error en AWAITING_DOC_NUMBER_FOR_REEVAL: {e}")
 
     elif state == "AWAITING_ESTABLISHMENT_CLARIFICATION":
         selected_option = process_user_choice(
@@ -1091,20 +929,15 @@ def webhook_handler():
             session["siscod"] = selected_option["siscod"]
             session["establishment_name"] = selected_option["sisent"]
             response = requests.post(
-                f"{LOLCLI_API_URL}/ListaServicios",
+                f"{LOLCLI_API_URL}/ListaServiciosWsp",
                 json={"siscod": session["siscod"]},
                 headers=lolcli_headers,
             )
             servicios = response.json().get("servicios", [])
-            reply, formatted_options = format_menu(
+            present_specialty_or_force_reeval(
+                session, phone_to_reply, lolcli_headers, servicios,
                 f"¡Perfecto! Ahora, para la sede *{session['establishment_name']}*, ¿qué especialidad necesitas?",
-                servicios,
-                "sercod",
-                "serdes",
             )
-            session["options"] = formatted_options
-            session["state"] = "AWAITING_SPECIALTY"
-            send_whatsapp_message(phone_to_reply, reply)
         else:
             send_whatsapp_message(
                 phone_to_reply,
@@ -1120,20 +953,15 @@ def webhook_handler():
             session["siscod"] = selected_option["siscod"]
             session["establishment_name"] = selected_option["sisent"]
             response = requests.post(
-                f"{LOLCLI_API_URL}/ListaServicios",
+                f"{LOLCLI_API_URL}/ListaServiciosWsp",
                 json={"siscod": session["siscod"]},
                 headers=lolcli_headers,
             )
             servicios = response.json().get("servicios", [])
-            reply, formatted_options = format_menu(
+            present_specialty_or_force_reeval(
+                session, phone_to_reply, lolcli_headers, servicios,
                 f"Entendido. Ahora, ¿para qué especialidad en *{session['establishment_name']}* necesitas la cita?",
-                servicios,
-                "sercod",
-                "serdes",
             )
-            session["options"] = formatted_options
-            session["state"] = "AWAITING_SPECIALTY"
-            send_whatsapp_message(phone_to_reply, reply)
         else:
             send_whatsapp_message(
                 phone_to_reply,
@@ -1148,30 +976,7 @@ def webhook_handler():
             session.setdefault("history", []).append("AWAITING_SPECIALTY")
             session["sercod"] = selected_option["sercod"]
             session["sernam"] = selected_option["serdes"]
-            payload_medicos = {"siscod": session["siscod"], "sercod": session["sercod"]}
-            response_medicos = requests.post(
-                f"{LOLCLI_API_URL}/ListaMedicos",
-                json=payload_medicos,
-                headers=lolcli_headers,
-            )
-            medicos = response_medicos.json().get("medicos", [])
-            if not medicos:
-                send_whatsapp_message(
-                    phone_to_reply,
-                    f"Lo sentimos, no hay doctores para *{session['sernam']}* en esta sede.",
-                )
-                send_whatsapp_message(
-                    phone_to_reply,
-                    "Escribe retroceder para elegir otra especialidad o salir para cancelar.",
-                )
-                session["history"].pop()
-            else:
-                reply, formatted_options = format_menu(
-                    "Estos son los doctores con espacio:", medicos, "medcod", "mednam"
-                )
-                session["options"] = formatted_options
-                session["state"] = "AWAITING_DOCTOR"
-                send_whatsapp_message(phone_to_reply, reply)
+            fetch_and_prompt_doctors(session, phone_to_reply, lolcli_headers)
         else:
             send_whatsapp_message(
                 phone_to_reply,
@@ -1310,7 +1115,7 @@ def webhook_handler():
                 "cittip": session["cittip"],
             }
             response = requests.post(
-                f"{LOLCLI_API_URL}/ListaTarifario", json=payload, headers=lolcli_headers
+                f"{LOLCLI_API_URL}/ListaTarifarioWsp", json=payload, headers=lolcli_headers
             )
             try:
                 response.raise_for_status()
@@ -1323,6 +1128,14 @@ def webhook_handler():
                     f"ERROR: La API de tarifas ({response.url}) falló. Status: {response.status_code}, Error: {e}"
                 )
                 tarifas = []
+
+            if session.get("flow") == "reeval":
+                # TODO: confirmar con LOLIMSA el mecanismo real de categoría social
+                # -- ListaTarifarioWsp no acepta ningún parámetro de paciente/categoría.
+                tarifas = [
+                    t for t in tarifas
+                    if not any(kw in normalize_text(t.get("tardes", "")) for kw in REEVAL_EXCLUDED_TARIFA_KEYWORDS)
+                ]
 
             if not tarifas:
                 send_whatsapp_message(
@@ -1346,11 +1159,18 @@ def webhook_handler():
             session.setdefault("history", []).append("AWAITING_TARIFF")
             session["tarcod"] = selected_option["tarcod"]
             session["tardes"] = selected_option["tardes"]
-            send_whatsapp_message(
-                phone_to_reply,
-                f"Ok, elegiste *'{session['tardes']}'*.\n\n¿El comprobante será *Boleta* (1) o *Factura* (2)?",
-            )
-            session["state"] = "AWAITING_RECEIPT_TYPE"
+            if session.get("flow") == "reeval":
+                # TODO: confirmar con LOLIMSA si boleta/factura/RUC aplican a
+                # este flujo -- por ahora se asume boleta por defecto.
+                session["tdofac"], session["tdofac_name"] = "BO", "Boleta"
+                send_whatsapp_message(phone_to_reply, f"Ok, elegiste *'{session['tardes']}'*.")
+                show_final_summary(session, phone_to_reply)
+            else:
+                send_whatsapp_message(
+                    phone_to_reply,
+                    f"Ok, elegiste *'{session['tardes']}'*.\n\n¿El comprobante será *Boleta* (1) o *Factura* (2)?",
+                )
+                session["state"] = "AWAITING_RECEIPT_TYPE"
         else:
             send_whatsapp_message(
                 phone_to_reply,
@@ -1362,14 +1182,11 @@ def webhook_handler():
         if choice in ["1", "boleta"]:
             session.setdefault("history", []).append("AWAITING_RECEIPT_TYPE")
             session["tdofac"], session["tdofac_name"] = "BO", "Boleta"
-            if "new_patient_data" in session:
-                show_final_summary(session, phone_to_reply)
-            else:
-                send_whatsapp_message(
-                    phone_to_reply,
-                    "🧾 Perfecto, será boleta. Para completar el registro, necesitamos tu dirección de domicilio. 🏠",
-                )
-                session["state"] = "AWAITING_ADDRESS"
+            send_whatsapp_message(
+                phone_to_reply,
+                "🧾 Perfecto, será boleta. Necesitamos tu dirección de domicilio. 🏠",
+            )
+            session["state"] = "AWAITING_ADDRESS"
 
         elif choice in ["2", "factura"]:
             session.setdefault("history", []).append("AWAITING_RECEIPT_TYPE")
@@ -1417,16 +1234,6 @@ def webhook_handler():
 
     elif state == "AWAITING_CONFIRMATION":
         if message_text.lower() in ["sí", "si"]:
-            if "new_patient_data" in session:
-                send_whatsapp_message(
-                    phone_to_reply, "Un momento, estoy creando tu ficha de paciente..."
-                )
-                registration_successful = register_new_patient(
-                    session, phone_to_reply, lolcli_headers
-                )
-                if not registration_successful:
-                    return jsonify({"status": "registration_failed"})
-
             send_whatsapp_message(
                 phone_to_reply,
                 "Perfecto. Ahora, por favor, indícame tu correo electrónico para enviarte el comprobante de pago.",
@@ -1462,6 +1269,10 @@ def webhook_handler():
                     "totnet": 0.0,
                     "totimp": 0.0,
                     "seccit": 0,
+                    # TODO: confirmar con LOLIMSA si prgori/plnnum son constantes
+                    # fijas de LOLCLI o códigos específicos del tenant anterior
+                    # que deben cambiar para ARIE (no se cambia a ciegas porque
+                    # un valor incorrecto podría romper el registro de la cita).
                     "prgori": "QU",
                     "plnnum": "161003",
                 }
@@ -1542,21 +1353,6 @@ def webhook_handler():
 
         if token_to_check:
             try:
-                # WARNING (only for test, delete in production entire function : if token_to_check == ... )
-                if token_to_check == "TEST_BYPASS":
-                    send_whatsapp_message(
-                        phone_to_reply,
-                        f"¡Pago confirmado! ✅\n\nTu cita está 100% confirmada.\n\n¡Gracias por preferir LOLIMSA! Te esperamos.",
-                    )
-                    save_reminder(session)
-                    send_whatsapp_message(
-                        phone_to_reply,
-                        "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
-                    )
-                    session["state"] = "AWAITING_POST_FLOW"
-                    user_sessions[sender] = session
-                    return jsonify({"status": "completed_and_session_cleared"})
-
                 send_whatsapp_message(
                     phone_to_reply,
                     "✅ Recibido. Estamos verificando el estado de tu pago, un momento por favor... 🔍",
@@ -1585,7 +1381,7 @@ def webhook_handler():
                 ):
                     send_whatsapp_message(
                         phone_to_reply,
-                        f"¡Pago confirmado! ✅\n\nTu cita está 100% confirmada.\n\n¡Gracias por preferir LOLIMSA! Te esperamos.",
+                        f"¡Pago confirmado! ✅\n\nTu cita está 100% confirmada.\n\n¡Gracias por preferir ARIE! Te esperamos.",
                     )
                     save_reminder(session)
                     send_whatsapp_message(
@@ -1648,7 +1444,7 @@ def webhook_handler():
         try:
             pacientes = (
                 requests.post(
-                    f"{LOLCLI_API_URL}/ValidarPaciente",
+                    f"{LOLCLI_API_URL}/ValidarPacienteWsp",
                     json={"tidcod": tidcod, "pacdoc": doc_number},
                     headers=lolcli_headers,
                 )
@@ -1667,23 +1463,23 @@ def webhook_handler():
                 phone_to_reply,
                 f"Un momento, consultando tus citas, {paciente['pacpmn']}... 🔍",
             )
-            # TODO: Replace "ListaCitasPaciente" with the confirmed endpoint name
             citas = (
                 requests.post(
-                    f"{LOLCLI_API_URL}/ListaCitasPacientes",
-                    json={"nro_documento": doc_number},
+                    f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
+                    json={"nro_documento": doc_number, "tipo": "C"},
                     headers=lolcli_headers,
                 )
                 .json()
                 .get("citas", [])
             )
+            citas = [c for c in citas if c]
             if not citas:
                 send_whatsapp_message(
                     phone_to_reply, "📋 No tienes citas agendadas en este momento. 😊"
                 )
             else:
                 msg, _ = format_appointments_list(
-                    citas, f"📋 *Tus citas agendadas, {paciente['pacpmn']}:*"
+                    citas, f"📋 *Tus citas agendadas, {paciente['pacpmn']}:*", mode="consult"
                 )
                 msg += "_ℹ️ Para reprogramar una cita, selecciona la opción *3* en el menú principal._"
                 send_whatsapp_message(phone_to_reply, msg)
@@ -1735,13 +1531,14 @@ def webhook_handler():
             )
             citas = (
                 requests.post(
-                    f"{LOLCLI_API_URL}/ListaCitasPacientes",
-                    json={"nro_documento": doc_number},
+                    f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
+                    json={"nro_documento": doc_number, "tipo": "R"},
                     headers=lolcli_headers,
                 )
                 .json()
                 .get("citas", [])
             )
+            citas = [c for c in citas if c]
             if not citas:
                 send_whatsapp_message(
                     phone_to_reply, "📋 No tienes citas agendadas para reprogramar. 😊"
@@ -1749,7 +1546,7 @@ def webhook_handler():
                 user_sessions.pop(sender, None)
                 return jsonify({"status": "no_appointments"})
             msg, formatted = format_appointments_list(
-                citas, "¿Cuál cita deseas reprogramar?"
+                citas, "¿Cuál cita deseas reprogramar?", mode="reschedule"
             )
             session["options"] = formatted
             session["state"] = "AWAITING_APPOINTMENT_TO_RESCHEDULE"
@@ -1762,15 +1559,28 @@ def webhook_handler():
             )
 
     elif state == "AWAITING_APPOINTMENT_TO_RESCHEDULE":
+        # NOTA: la bifurcación por tipo de cita (reevaluación médica: mismo
+        # médico/sede, ventana de 4 semanas, S/.15 -- vs. terapia: mismo
+        # terapeuta/sede, ventana de 30 días, motivo "falta del niño", lista de
+        # exclusión) NO está implementada todavía: requiere confirmar con
+        # LOLIMSA qué campo de la fila de ListarCitasPacientesWsp distingue
+        # ambos tipos, y probarla contra una cita real (no disponible aún en
+        # el sandbox). Por ahora el flujo de reprogramación sigue siendo único
+        # y confía en que ReagendarCitaWsp rechace del lado del servidor los
+        # casos fuera de regla (ver bloque de confirmación más abajo).
         selected_option = process_user_choice(message_text, session.get("options", []))
         if selected_option:
             session["citid_to_reschedule"] = selected_option.get("secuencia")
-            session["siscod"] = os.getenv("LOLCLI_ENTIDAD", "000000001")
+            # TODO: confirmar el nombre real del campo de sede/siscod en una fila
+            # de ListarCitasPacientesWsp -- LOLCLI_ENTIDAD es un código de
+            # entidad, no de sede, y usarlo como siscod es probablemente
+            # incorrecto salvo que coincidan por casualidad.
+            session["siscod"] = selected_option.get("siscod", os.getenv("LOLCLI_ENTIDAD", "000000001"))
             session["sercod"] = selected_option.get("sercod")
             session["medcod"] = selected_option.get("medcod")
             session["mednam"] = selected_option.get("medico", "")
             session["sernam"] = selected_option.get("servicio", "")
-            session["establishment_name"] = ""
+            session["establishment_name"] = selected_option.get("sede", selected_option.get("establecimiento", ""))
             session["cittip"] = selected_option.get("cittip", "P")
             session["tarcod"] = selected_option.get("tarcod", "")
             send_whatsapp_message(
@@ -1892,7 +1702,6 @@ def webhook_handler():
                 send_whatsapp_message(
                     phone_to_reply, "⏳ Procesando el cambio de tu cita, un momento..."
                 )
-                # TODO: Replace "AnularCita" with the confirmed endpoint name
                 fecref_str = datetime.strptime(
                     session["new_fecha_api"] + session["new_hora_api"], "%Y%m%d%H%M"
                 ).strftime("%d-%m-%Y %H:%M")
@@ -1904,19 +1713,28 @@ def webhook_handler():
                     "xxfecref": fecref_str,
                     "xxcittip": session.get("cittip", "P"),
                     "usecod": 1,
+                    # TODO: confirmar con LOLIMSA si usenam/usecod identifican
+                    # al usuario/sistema que ejecuta la acción (no cambiar sin
+                    # confirmar) o si es texto de marca visible al paciente
+                    # (en cuyo caso debería decir "ARIE").
                     "usenam": "LOLIMSA",
                 }
+                # TODO: si la cita reprogramada es de terapia (recuperación), ARIE
+                # requiere marcarla con un valor de "tipo de citado" -- el propio
+                # requerimiento del cliente lo deja como "por consultar", así que
+                # no se puede completar este campo todavía. Cuando LOLIMSA lo
+                # confirme, agregar aquí p.ej. payload_actualizar["xxtipcit"] = "R".
                 if session.get("cittip") == "V" and session.get("zoom_link"):
                     payload_actualizar["xxcitzoomlink"] = session["zoom_link"]
 
-                print(f"INFO ActualizarCitaProtocolo payload: {payload_actualizar}")
+                print(f"INFO ReagendarCitaWsp payload: {payload_actualizar}")
                 resp = requests.post(
-                    f"{LOLCLI_API_URL}/ActualizarCitaProtocolo",
+                    f"{LOLCLI_API_URL}/ReagendarCitaWsp",
                     json=payload_actualizar,
                     headers=lolcli_headers,
                 )
                 result = resp.json()
-                print(f"INFO ActualizarCitaProtocolo response {resp.status_code}: {result}")
+                print(f"INFO ReagendarCitaWsp response {resp.status_code}: {result}")
                 if resp.ok and result.get("status") == "success":
                     send_whatsapp_message(
                         phone_to_reply,

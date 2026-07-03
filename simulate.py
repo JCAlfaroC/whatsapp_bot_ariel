@@ -34,7 +34,10 @@ if os.path.exists(env_path):
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
-                os.environ.setdefault(k.strip(), v.strip())
+                v = v.strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                    v = v[1:-1]
+                os.environ.setdefault(k.strip(), v)
 
 # Dummy Evolution vars (not used in simulator)
 os.environ.setdefault("EVOLUTION_API_URL", "http://unused")
@@ -42,7 +45,7 @@ os.environ.setdefault("EVOLUTION_API_KEY", "unused")
 os.environ.setdefault("EVOLUTION_INSTANCE_NAME", "unused")
 
 # ── Import the chatbot app ───────────────────────────────────────────────────
-import app as chatbot
+import app_improved as chatbot
 
 # ── Replace send_whatsapp_message with terminal output ───────────────────────
 CYAN  = "\033[96m"
