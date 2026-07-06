@@ -11,6 +11,7 @@ import threading
 import time
 import unicodedata
 from datetime import date, datetime, timedelta
+from urllib.parse import urlparse, urlunparse
 
 import requests
 from dotenv import load_dotenv
@@ -377,6 +378,14 @@ def generate_payment_link_and_send(session, phone_to_reply, headers):
 
         if data_link.get("status") == "success" and data_link.get("payment_link"):
             payment_url = data_link["payment_link"]
+            # FASE DE PRUEBAS: LOLCLI aún devuelve el dominio de producción
+            # (qullana.com) en "payment_link". Para que el pago se procese en el
+            # entorno de pruebas de Niubiz se antepone "qa-pacientes." al host.
+            # Quitar este bloque cuando el bot pase a producción real.
+            parsed_url = urlparse(payment_url)
+            if not parsed_url.netloc.startswith("qa-pacientes."):
+                parsed_url = parsed_url._replace(netloc=f"qa-pacientes.{parsed_url.netloc}")
+                payment_url = urlunparse(parsed_url)
             try:
                 token = payment_url.split("/")[-1]
                 session["payment_token"] = token
@@ -627,8 +636,7 @@ def show_main_menu(phone_to_reply, session):
         "¿Qué deseas hacer hoy?\n\n"
         "*1.* 📅 Agendar una nueva cita\n"
         "*2.* 🔍 Consultar mis citas\n"
-        "*3.* 🔄 Reprogramar una cita\n"
-        "*4.* 🩺 Agendar reevaluación médica\n\n"
+        "*3.* 🔄 Reprogramar una cita\n\n"
         "_Escribe el número de tu elección._"
     )
     session["state"] = "AWAITING_MAIN_MENU"
@@ -738,22 +746,10 @@ def webhook_handler():
             session["state"] = "AWAITING_DOC_NUMBER_FOR_RESCHEDULE"
             send_whatsapp_message(phone_to_reply, "🔄 Para reprogramar tu cita, ingresa tu número de D.N.I.")
 
-        elif choice in ["4", "reevaluacion", "reevaluación", "reevaluación médica"]:
-            reply, opts = format_menu(
-                "Para agendar tu reevaluación médica, selecciona tu tipo de documento:",
-                lista_documentos_global,
-                "tidcod",
-                "tiddes",
-            )
-            session["options"] = opts
-            session["flow"] = "reeval"
-            session["state"] = "AWAITING_DOC_TYPE_FOR_REEVAL"
-            send_whatsapp_message(phone_to_reply, reply)
-
         else:
             send_whatsapp_message(
                 phone_to_reply,
-                "❓ Por favor, escribe *1*, *2*, *3* o *4* para elegir una opción. 😊",
+                "❓ Por favor, escribe *1*, *2* o *3* para elegir una opción. 😊",
             )
 
     elif state == "AWAITING_DOC_TYPE":
