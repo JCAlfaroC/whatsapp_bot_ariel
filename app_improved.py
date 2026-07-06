@@ -576,8 +576,13 @@ def format_appointments_list(citas, title, mode="consult"):
     for i, cita in enumerate(citas, 1):
         fecha_raw = cita.get("fecha", "")
         try:
-            # Formato real de ListarCitasPacientesWsp: "2026-07-07 09:00:00.000"
-            date_obj = datetime.strptime(fecha_raw[:19], "%Y-%m-%d %H:%M:%S")
+            # ListarCitasPacientesWsp ha devuelto dos formatos distintos:
+            # "2026-07-07 09:00:00.000" y, más recientemente, ISO 8601
+            # "2026-07-07T09:00:00.000Z". Se normaliza antes de parsear; la
+            # "Z" se descarta (no se convierte de UTC) porque la hora ya
+            # viene en hora local de la clínica, igual que el formato anterior.
+            fecha_normalizada = fecha_raw.replace("T", " ").rstrip("Z")
+            date_obj = datetime.strptime(fecha_normalizada[:19], "%Y-%m-%d %H:%M:%S")
             fecha = format_date_es(date_obj)
             hora = date_obj.strftime("%H:%M")
         except (ValueError, TypeError):
@@ -1344,15 +1349,22 @@ def webhook_handler():
                 phone_to_reply,
                 f"Un momento, consultando tus citas, {paciente['pacpmn']}... 🔍",
             )
-            data_citas = requests.post(
+            response_citas = requests.post(
                 f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
                 json={"nro_documento": doc_number, "tipo": "C"},
                 headers=lolcli_headers,
-            ).json()
-            print(f"INFO: ListarCitasPacientesWsp (tipo=C, doc={doc_number}) respuesta: {data_citas}")
-            citas = data_citas.get("citas", [])
-            citas = [c for c in citas if c]
-            if not citas:
+            )
+            data_citas = response_citas.json()
+            print(f"INFO: ListarCitasPacientesWsp (consult, doc={doc_number}) respuesta: {data_citas}")
+            server_error = response_citas.status_code >= 500 or data_citas.get("code") == 500
+            citas = [c for c in data_citas.get("citas", []) if c] if not server_error else []
+
+            if server_error:
+                send_whatsapp_message(
+                    phone_to_reply,
+                    "😔 Tuvimos un problema técnico al consultar tus citas. Por favor, intenta de nuevo en unos minutos o contáctanos directamente. 🙏",
+                )
+            elif not citas:
                 send_whatsapp_message(
                     phone_to_reply, "📋 No tienes citas agendadas en este momento. 😊"
                 )
@@ -1408,14 +1420,23 @@ def webhook_handler():
             send_whatsapp_message(
                 phone_to_reply, "Un momento, buscando tus citas... 🔍"
             )
-            data_citas = requests.post(
+            response_citas = requests.post(
                 f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
                 json={"nro_documento": doc_number, "tipo": "R"},
                 headers=lolcli_headers,
-            ).json()
-            print(f"INFO: ListarCitasPacientesWsp (tipo=R, doc={doc_number}) respuesta: {data_citas}")
-            citas = data_citas.get("citas", [])
-            citas = [c for c in citas if c]
+            )
+            data_citas = response_citas.json()
+            print(f"INFO: ListarCitasPacientesWsp (reschedule, doc={doc_number}) respuesta: {data_citas}")
+            server_error = response_citas.status_code >= 500 or data_citas.get("code") == 500
+            citas = [c for c in data_citas.get("citas", []) if c] if not server_error else []
+
+            if server_error:
+                send_whatsapp_message(
+                    phone_to_reply,
+                    "😔 Tuvimos un problema técnico al buscar tus citas. Por favor, intenta de nuevo en unos minutos o contáctanos directamente. 🙏",
+                )
+                user_sessions.pop(sender, None)
+                return jsonify({"status": "server_error"})
             if not citas:
                 send_whatsapp_message(
                     phone_to_reply, "📋 No tienes citas agendadas para reprogramar. 😊"
