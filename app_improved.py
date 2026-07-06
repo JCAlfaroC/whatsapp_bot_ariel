@@ -575,26 +575,14 @@ def format_appointments_list(citas, title, mode="consult"):
     today = date.today()
     for i, cita in enumerate(citas, 1):
         fecha_raw = cita.get("fecha", "")
-        hora_raw = cita.get("hora", "")
-        date_obj = None
         try:
-            date_obj = datetime.strptime(fecha_raw[:19], "%Y-%m-%dT%H:%M:%S")
+            # Formato real de ListarCitasPacientesWsp: "2026-07-07 09:00:00.000"
+            date_obj = datetime.strptime(fecha_raw[:19], "%Y-%m-%d %H:%M:%S")
             fecha = format_date_es(date_obj)
-        except (ValueError, TypeError):
-            try:
-                date_obj = datetime.strptime(fecha_raw, "%Y%m%d")
-                fecha = format_date_es(date_obj)
-
-            except (ValueError, TypeError):
-                fecha = fecha_raw or "Fecha no disponible"
-        if hora_raw:
-            try:
-                hora = datetime.strptime(hora_raw, "%H%M").strftime("%H:%M")
-            except (ValueError, TypeError):
-                hora = hora_raw
-        elif date_obj and "T" in fecha_raw:
             hora = date_obj.strftime("%H:%M")
-        else:
+        except (ValueError, TypeError):
+            date_obj = None
+            fecha = fecha_raw or "Fecha no disponible"
             hora = "Hora no disponible"
 
         es_hoy = bool(date_obj) and date_obj.date() == today
@@ -603,19 +591,15 @@ def format_appointments_list(citas, title, mode="consult"):
             fecha_hora_line = f"*{fecha_hora_line} (HOY)*"
 
         if mode == "consult":
-            # TODO: nombres de campo (sede/modalidad/estado de pago) son un supuesto
-            # -- confirmar con LOLIMSA la forma real de una fila de ListarCitasPacientesWsp.
-            sede = cita.get("sede", cita.get("establecimiento", ""))
-            modalidad = cita.get("modalidad", {"P": "Presencial", "V": "Teleconsulta"}.get(cita.get("cittip", ""), ""))
-            tarifa = cita.get("tarifa", cita.get("tardes", ""))
-            estado_pago = cita.get("estado_pago", cita.get("estadopago", ""))
+            modalidad = {"P": "Presencial", "V": "Teleconsulta"}.get(cita.get("cittip", ""), "")
+            estado_pago = cita.get("pagado", "")
 
             msg += (
                 f"*{i}.* {fecha_hora_line}\n"
-                f"   🏥 {sede}\n"
+                f"   🏥 {cita.get('establecimiento', '')}\n"
                 f"   🩺 {cita.get('servicio', '')}\n"
                 f"   👨‍⚕️ {cita.get('medico', '')}\n"
-                f"   🏷️ {tarifa}"
+                f"   🏷️ {cita.get('tardes', '')}"
                 + (f" — {modalidad}" if modalidad else "")
                 + "\n"
                 + (f"   💳 Estado de pago: {estado_pago}\n" if estado_pago else "")
@@ -1360,15 +1344,13 @@ def webhook_handler():
                 phone_to_reply,
                 f"Un momento, consultando tus citas, {paciente['pacpmn']}... 🔍",
             )
-            citas = (
-                requests.post(
-                    f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
-                    json={"nro_documento": doc_number, "tipo": "C"},
-                    headers=lolcli_headers,
-                )
-                .json()
-                .get("citas", [])
-            )
+            data_citas = requests.post(
+                f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
+                json={"nro_documento": doc_number, "tipo": "C"},
+                headers=lolcli_headers,
+            ).json()
+            print(f"INFO: ListarCitasPacientesWsp (tipo=C, doc={doc_number}) respuesta: {data_citas}")
+            citas = data_citas.get("citas", [])
             citas = [c for c in citas if c]
             if not citas:
                 send_whatsapp_message(
@@ -1426,15 +1408,13 @@ def webhook_handler():
             send_whatsapp_message(
                 phone_to_reply, "Un momento, buscando tus citas... 🔍"
             )
-            citas = (
-                requests.post(
-                    f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
-                    json={"nro_documento": doc_number, "tipo": "R"},
-                    headers=lolcli_headers,
-                )
-                .json()
-                .get("citas", [])
-            )
+            data_citas = requests.post(
+                f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
+                json={"nro_documento": doc_number, "tipo": "R"},
+                headers=lolcli_headers,
+            ).json()
+            print(f"INFO: ListarCitasPacientesWsp (tipo=R, doc={doc_number}) respuesta: {data_citas}")
+            citas = data_citas.get("citas", [])
             citas = [c for c in citas if c]
             if not citas:
                 send_whatsapp_message(
