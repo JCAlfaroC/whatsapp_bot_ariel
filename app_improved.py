@@ -362,15 +362,8 @@ def generate_payment_link_and_send(session, phone_to_reply, headers):
         invnum_val = session.get("invnum_cita")
         invnum = int(invnum_val) if invnum_val else 0
 
-        # TODO: confirmar con LOLIMSA si "cliente": "consultoria" es un
-        # identificador de entorno/backend fijo para todos los tenants de
-        # LOLCLI, o si ARIE necesita su propio valor aquí -- no se cambia a
-        # ciegas porque un valor incorrecto podría romper la generación del
-        # link de pago. También confirmar si se requiere algún parámetro
-        # explícito para forzar la pasarela Niubiz (no se ve ninguno en este
-        # payload).
         payload_pago = {
-            "cliente": "consultoria",
+            "cliente": "arie_pruebas",
             "invnum": invnum,
             "paydat": datetime.now().strftime("%d-%m-%Y %H:%M:%S.000"),
         }
