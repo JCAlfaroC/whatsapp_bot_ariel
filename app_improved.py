@@ -496,7 +496,6 @@ def fetch_and_prompt_doctors(session, phone_to_reply, lolcli_headers):
 
 def show_final_summary(session, phone_to_reply):
     patient_name = session.get("paciente_nombre")
-    domicilio = session.get("pacdir")
 
     summary = (
         f"¡Casi listo! ✨ Por favor, revisa que todo esté correcto:\n\n"
@@ -507,19 +506,8 @@ def show_final_summary(session, phone_to_reply):
         f"🗓️ *Fecha:* {session['fecha_user']}\n"
         f"⏰ *Hora:* {session['hora_user']}\n"
         f"🏷️ *Tarifa:* {session['tardes']}\n\n"
-        f"🧾 *Comprobante:* {session['tdofac_name']}\n"
+        f"Si todo está bien, escribe *'Sí'* para confirmar tu cita."
     )
-
-    if session.get("tdofac_name") == "Factura":
-        summary += (
-            f" *RUC:* {session.get('ruc', '')}\n"
-            f" *Razón Social:* {session.get('razon_social', '')}\n"
-            f" *Dirección Fiscal:* {session.get('direccion_fiscal', '')}\n\n"
-        )
-    elif domicilio:
-        summary += f" *Domicilio:* {domicilio}\n\n"
-
-    summary += "Si todo está bien, escribe *'Sí'* para confirmar tu cita."
 
     send_whatsapp_message(phone_to_reply, summary)
     session["state"] = "AWAITING_CONFIRMATION"
@@ -1159,96 +1147,16 @@ def webhook_handler():
             session.setdefault("history", []).append("AWAITING_TARIFF")
             session["tarcod"] = selected_option["tarcod"]
             session["tardes"] = selected_option["tardes"]
-            if session.get("flow") == "reeval":
-                # TODO: confirmar con LOLIMSA si boleta/factura/RUC aplican a
-                # este flujo -- por ahora se asume boleta por defecto.
-                session["tdofac"], session["tdofac_name"] = "BO", "Boleta"
-                send_whatsapp_message(phone_to_reply, f"Ok, elegiste *'{session['tardes']}'*.")
-                show_final_summary(session, phone_to_reply)
-            else:
-                send_whatsapp_message(
-                    phone_to_reply,
-                    f"Ok, elegiste *'{session['tardes']}'*.\n\n¿El comprobante será *Boleta* (1) o *Factura* (2)?",
-                )
-                session["state"] = "AWAITING_RECEIPT_TYPE"
+            send_whatsapp_message(phone_to_reply, f"Ok, elegiste *'{session['tardes']}'*.")
+            show_final_summary(session, phone_to_reply)
         else:
             send_whatsapp_message(
                 phone_to_reply,
                 "❓ No reconocí esa tarifa. Por favor, escribe el número de la tarifa que deseas. 🙏",
             )
 
-    elif state == "AWAITING_RECEIPT_TYPE":
-        choice = message_text.lower()
-        if choice in ["1", "boleta"]:
-            session.setdefault("history", []).append("AWAITING_RECEIPT_TYPE")
-            session["tdofac"], session["tdofac_name"] = "BO", "Boleta"
-            send_whatsapp_message(
-                phone_to_reply,
-                "🧾 Perfecto, será boleta. Necesitamos tu dirección de domicilio. 🏠",
-            )
-            session["state"] = "AWAITING_ADDRESS"
-
-        elif choice in ["2", "factura"]:
-            session.setdefault("history", []).append("AWAITING_RECEIPT_TYPE")
-            session["tdofac"], session["tdofac_name"] = "FA", "Factura"
-            send_whatsapp_message(
-                phone_to_reply,
-                "🧾 Entendido, será factura. Por favor, ingresa el RUC de la empresa (11 dígitos).",
-            )
-            session["state"] = "AWAITING_RUC"
-        else:
-            send_whatsapp_message(
-                phone_to_reply,
-                "❓ Por favor, escribe 1 para Boleta o 2 para Factura. 🧾",
-            )
-
-    elif state == "AWAITING_ADDRESS":
-        session["pacdir"] = message_text.strip()
-        show_final_summary(session, phone_to_reply)
-
-    elif state == "AWAITING_RUC":
-        if message_text.isdigit() and len(message_text) == 11:
-            session["ruc"] = message_text
-            send_whatsapp_message(
-                phone_to_reply,
-                "✅ Gracias. Ahora, por favor escribe la Razón Social de la empresa.",
-            )
-            session["state"] = "AWAITING_RAZON_SOCIAL"
-        else:
-            send_whatsapp_message(
-                phone_to_reply,
-                "⚠️ El RUC debe tener exactamente 11 dígitos. Por favor, verifica e inténtalo de nuevo.",
-            )
-
-    elif state == "AWAITING_RAZON_SOCIAL":
-        session["razon_social"] = message_text.title()
-        send_whatsapp_message(
-            phone_to_reply,
-            "✅ Casi listo. Por último, escribe la Dirección Fiscal de la empresa. 🏢",
-        )
-        session["state"] = "AWAITING_FISCAL_ADDRESS"
-
-    elif state == "AWAITING_FISCAL_ADDRESS":
-        session["direccion_fiscal"] = message_text.title()
-        show_final_summary(session, phone_to_reply)
-
     elif state == "AWAITING_CONFIRMATION":
         if message_text.lower() in ["sí", "si"]:
-            send_whatsapp_message(
-                phone_to_reply,
-                "Perfecto. Ahora, por favor, indícame tu correo electrónico para enviarte el comprobante de pago.",
-            )
-            session["state"] = "AWAITING_EMAIL_FOR_PAYMENT"
-        else:
-            send_whatsapp_message(
-                phone_to_reply,
-                "🤔 Sin problema. Escribe retroceder si deseas corregir algún dato, o salir si prefieres cancelar. 😊",
-            )
-
-    elif state == "AWAITING_EMAIL_FOR_PAYMENT":
-        email = message_text.strip()
-        if "@" in email and "." in email:
-            session["email"] = email
             try:
                 send_whatsapp_message(
                     phone_to_reply,
@@ -1326,12 +1234,12 @@ def webhook_handler():
                     phone_to_reply,
                     "😔 Lo sentimos, ocurrió un error al registrar tu cita. Por favor, intenta de nuevo o llámanos directamente. 🙏",
                 )
-                print(f"Error en AWAITING_EMAIL_FOR_PAYMENT (RegistroCita): {e}")
+                print(f"Error en AWAITING_CONFIRMATION (RegistroCita): {e}")
                 user_sessions.pop(sender, None)
         else:
             send_whatsapp_message(
                 phone_to_reply,
-                "El formato del correo no parece correcto. Por favor, ingrésalo de nuevo.",
+                "🤔 Sin problema. Escribe retroceder si deseas corregir algún dato, o salir si prefieres cancelar. 😊",
             )
 
     elif state == "AWAITING_PAYMENT_CONFIRMATION":
