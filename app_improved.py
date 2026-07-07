@@ -831,7 +831,11 @@ def webhook_handler():
             send_whatsapp_message(phone_to_reply, reply)
 
         elif choice in ["3", "reprogramar", "cambiar cita"]:
-            session["tidcod"] = "03"
+            # tidcod "01" = D.N.I. (confirmado contra ListaTipoDocumentoElolcli
+            # -- "03" es CEDULA DIPLOMATICA, no D.N.I.; ese valor incorrecto
+            # causaba que ValidarPacienteWsp no encontrara pacientes
+            # registrados con DNI real en el flujo de reprogramación).
+            session["tidcod"] = "01"
             session["tiddes"] = "D.N.I."
             session["state"] = "AWAITING_DOC_NUMBER_FOR_RESCHEDULE"
             send_whatsapp_message(phone_to_reply, "🔄 Para reprogramar tu cita, ingresa tu número de D.N.I.")
@@ -865,7 +869,7 @@ def webhook_handler():
         doc_number = message_text.strip()
         tidcod = session.get("tidcod")
 
-        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
+        if tidcod == "01" and (not doc_number.isdigit() or len(doc_number) != 8):
             send_whatsapp_message(
                 phone_to_reply,
                 "⚠️ El DNI ingresado no es válido. Debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏",
@@ -956,7 +960,7 @@ def webhook_handler():
         doc_number = message_text.strip()
         tidcod = session.get("tidcod")
 
-        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
+        if tidcod == "01" and (not doc_number.isdigit() or len(doc_number) != 8):
             send_whatsapp_message(
                 phone_to_reply,
                 "⚠️ El DNI ingresado no es válido. Debe tener exactamente 8 dígitos numéricos. ¿Puedes verificarlo e intentarlo de nuevo? 🙏",
@@ -1476,7 +1480,7 @@ def webhook_handler():
     elif state == "AWAITING_DOC_NUMBER_FOR_CONSULT":
         doc_number = message_text.strip()
         tidcod = session.get("tidcod")
-        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
+        if tidcod == "01" and (not doc_number.isdigit() or len(doc_number) != 8):
             send_whatsapp_message(
                 phone_to_reply, "⚠️ El DNI debe tener exactamente 8 dígitos numéricos."
             )
@@ -1567,7 +1571,7 @@ def webhook_handler():
     elif state == "AWAITING_DOC_NUMBER_FOR_RESCHEDULE":
         doc_number = message_text.strip()
         tidcod = session.get("tidcod")
-        if tidcod == "03" and (not doc_number.isdigit() or len(doc_number) != 8):
+        if tidcod == "01" and (not doc_number.isdigit() or len(doc_number) != 8):
             send_whatsapp_message(
                 phone_to_reply, "⚠️ El DNI debe tener exactamente 8 dígitos numéricos."
             )
@@ -2019,4 +2023,11 @@ reminder_thread.start()
 if __name__ == "__main__":
     from waitress import serve
     port = int(os.getenv("PORT", 5001))
-    serve(app, host="0.0.0.0", port=port)
+    # waitress usa 4 threads por defecto. Cada mensaje saliente pasa por
+    # send_whatsapp_message(), que duerme 1.5s antes de enviar (pacing hacia
+    # Evolution API) -- varios flujos envían 2+ mensajes por webhook, así que
+    # un solo mensaje entrante puede retener un thread varios segundos. Con
+    # solo 4 threads, 2 usuarios probando a la vez ya satura la cola
+    # ("Task queue depth" creciente en el log). Más threads es seguro aquí
+    # porque el tiempo se gasta esperando (sleep/red), no en CPU.
+    serve(app, host="0.0.0.0", port=port, threads=24)
