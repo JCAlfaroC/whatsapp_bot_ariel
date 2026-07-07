@@ -420,6 +420,69 @@ def generate_payment_link_and_send(session, phone_to_reply, headers):
         )
 
 
+# Derecho de reprogramación de citas: oricod/tarcod son fijos para este
+# concepto de cobro (confirmados por LOLIMSA junto con el payload de
+# GenerarLinkPagoOrdenPrefactura), no varían por cita ni por paciente.
+RESCHEDULE_FEE_ORICOD = "PM"
+RESCHEDULE_FEE_TARCOD = "001001"
+
+
+def generate_reschedule_payment_link_and_send(session, phone_to_reply, headers):
+    try:
+        payload_pago = {
+            "oricod": RESCHEDULE_FEE_ORICOD,
+            "tarcod": RESCHEDULE_FEE_TARCOD,
+            "pachis": session.get("pachis"),
+            "cliente": "arie_pruebas",
+        }
+        url_pago = f"{LOLCLI_API_URL}/GenerarLinkPagoOrdenPrefactura"
+        print(f"INFO: Generando link de pago de reprogramación con payload: {payload_pago}")
+
+        response_link = requests.post(url_pago, json=payload_pago, headers=headers)
+        response_link.raise_for_status()
+        data_link = response_link.json()
+
+        if data_link.get("status") == "success" and data_link.get("payment_link"):
+            payment_url = data_link["payment_link"]
+            # FASE DE PRUEBAS: ver nota idéntica en generate_payment_link_and_send.
+            parsed_url = urlparse(payment_url)
+            if not parsed_url.netloc.startswith("qa-pacientes."):
+                parsed_url = parsed_url._replace(netloc=f"qa-pacientes.{parsed_url.netloc}")
+                payment_url = urlunparse(parsed_url)
+            session["reschedule_payment_token"] = data_link.get("token")
+            monto = data_link.get("monto", 15)
+            send_whatsapp_message(
+                phone_to_reply,
+                f"Para confirmar tu reprogramación, realiza el pago del derecho de reprogramación de citas de "
+                f"*S/ {monto:.2f}* en el siguiente enlace:\n\n{payment_url}\n\nCuando hayas completado el pago "
+                "en la página, regresa aquí y escríbeme *'listo'* para confirmar tu reprogramación. ✅",
+            )
+            session["state"] = "AWAITING_RESCHEDULE_PAYMENT_CONFIRMATION"
+        else:
+            send_whatsapp_message(
+                phone_to_reply,
+                "Tuvimos un problema al generar tu enlace de pago. Por favor, intenta de nuevo en un momento.",
+            )
+            session["state"] = "AWAITING_RESCHEDULE_CONFIRMATION"
+
+    except requests.exceptions.HTTPError as err:
+        print(
+            f"ERROR HTTP en generate_reschedule_payment_link_and_send: {err.response.status_code} - {err.response.text}"
+        )
+        send_whatsapp_message(
+            phone_to_reply,
+            "😔 Tuvimos un problema de comunicación al preparar tu pago. Por favor, intenta de nuevo en unos momentos. 🙏",
+        )
+        session["state"] = "AWAITING_RESCHEDULE_CONFIRMATION"
+    except Exception as e:
+        print(f"ERROR en generate_reschedule_payment_link_and_send: {e}")
+        send_whatsapp_message(
+            phone_to_reply,
+            "😔 Ocurrió un error al preparar tu pago. Por favor, intenta de nuevo o contáctanos. 🙏",
+        )
+        session["state"] = "AWAITING_RESCHEDULE_CONFIRMATION"
+
+
 def continue_appointment_flow(session, phone_to_reply, lolcli_headers):
     send_whatsapp_message(
         phone_to_reply,
@@ -1449,6 +1512,25 @@ def webhook_handler():
             send_whatsapp_message(
                 phone_to_reply, "Un momento, buscando tus citas... 🔍"
             )
+
+            # ListarCitasPacientesWsp no devuelve "pachis" (código interno del
+            # paciente), pero se necesita para el pago del derecho de
+            # reprogramación (GenerarLinkPagoOrdenPrefactura). Se consulta
+            # ValidarPacienteWsp solo para obtenerlo -- su campo "valido"
+            # (regla de 10 días para citas nuevas) no aplica aquí, así que no
+            # se usa para bloquear el acceso a reprogramar.
+            try:
+                response_paciente = requests.post(
+                    f"{LOLCLI_API_URL}/ValidarPacienteWsp",
+                    json={"tidcod": tidcod, "pacdoc": doc_number},
+                    headers=lolcli_headers,
+                )
+                pacientes = response_paciente.json().get("paciente", [])
+                if pacientes:
+                    session["pachis"] = pacientes[0].get("pachis")
+            except Exception as e:
+                print(f"ERROR ValidarPacienteWsp (reschedule, pachis lookup): {e}")
+
             response_citas = requests.post(
                 f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
                 json={"nro_documento": doc_number, "tipo": "R"},
@@ -1649,9 +1731,6 @@ def webhook_handler():
     elif state == "AWAITING_RESCHEDULE_CONFIRMATION":
         if message_text.lower() in ["sí", "si"]:
             try:
-                send_whatsapp_message(
-                    phone_to_reply, "⏳ Procesando el cambio de tu cita, un momento..."
-                )
                 fecref_str = datetime.strptime(
                     session["new_fecha_api"] + session["new_hora_api"], "%Y%m%d%H%M"
                 ).strftime("%d-%m-%Y %H:%M")
@@ -1677,46 +1756,131 @@ def webhook_handler():
                 if session.get("cittip") == "V" and session.get("zoom_link"):
                     payload_actualizar["xxcitzoomlink"] = session["zoom_link"]
 
-                print(f"INFO ReagendarCitaWsp payload: {payload_actualizar}")
-                resp = requests.post(
-                    f"{LOLCLI_API_URL}/ReagendarCitaWsp",
-                    json=payload_actualizar,
-                    headers=lolcli_headers,
+                # El cambio de cita solo se ejecuta (ReagendarCitaWsp) una vez
+                # confirmado el pago del derecho de reprogramación -- ver
+                # AWAITING_RESCHEDULE_PAYMENT_CONFIRMATION más abajo.
+                session["reschedule_payload"] = payload_actualizar
+                send_whatsapp_message(
+                    phone_to_reply,
+                    "Antes de confirmar el cambio, es necesario abonar el derecho de reprogramación de citas. "
+                    "Generando tu enlace de pago... 💳",
                 )
-                result = resp.json()
-                print(f"INFO ReagendarCitaWsp response {resp.status_code}: {result}")
-                if resp.ok and result.get("status") == "success":
-                    send_whatsapp_message(
-                        phone_to_reply,
-                        f"✅ ¡Tu cita ha sido reprogramada exitosamente!\n\n"
-                        f"🗓️ *Nueva fecha:* {session['new_fecha_user']}\n"
-                        f"⏰ *Nueva hora:* {session['new_hora_user']}\n\n"
-                        f"¡Te esperamos! 😊",
-                    )
-                    send_whatsapp_message(
-                        phone_to_reply,
-                        "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
-                    )
-                    session["state"] = "AWAITING_POST_FLOW"
-                    user_sessions[sender] = session
-                    return jsonify({"status": "rescheduled"})
-                else:
-                    raise Exception(
-                        result.get(
-                            "xxmessage", result.get("message", "error desconocido")
-                        )
-                    )
-
+                generate_reschedule_payment_link_and_send(session, phone_to_reply, lolcli_headers)
             except Exception as e:
                 print(f"ERROR en AWAITING_RESCHEDULE_CONFIRMATION: {e}")
                 send_whatsapp_message(
                     phone_to_reply,
-                    "😔 Ocurrió un error al reprogramar tu cita. Por favor, intenta de nuevo o contáctanos. 🙏",
+                    "😔 Ocurrió un error al preparar tu reprogramación. Por favor, intenta de nuevo o contáctanos. 🙏",
                 )
         else:
             send_whatsapp_message(
                 phone_to_reply,
                 "Entendido. Escribe *'salir'* si deseas cancelar o continúa eligiendo. 😊",
+            )
+
+    elif state == "AWAITING_RESCHEDULE_PAYMENT_CONFIRMATION":
+        payment_id_prefix = "¡ya he completado mi pago!, el id de pago es:"
+        message_lower = message_text.lower()
+        token_to_check = None
+
+        if message_lower.startswith(payment_id_prefix):
+            token_to_check = message_text[len(payment_id_prefix):].strip()
+        elif message_lower in ["listo", "pagado", "ya pagué", "ya pague"]:
+            token_to_check = session.get("reschedule_payment_token")
+        else:
+            send_whatsapp_message(
+                phone_to_reply,
+                "Para confirmar tu reprogramación, por favor envíanos el mensaje completo de confirmación que "
+                "recibiste al pagar (debe incluir el ID de pago), o escribe *'listo'* si ya completaste el pago. 📋",
+            )
+            user_sessions[sender] = session
+            return jsonify({"status": "awaiting_proper_confirmation"})
+
+        if token_to_check:
+            try:
+                send_whatsapp_message(
+                    phone_to_reply,
+                    "✅ Recibido. Estamos verificando el estado de tu pago, un momento por favor... 🔍",
+                )
+                response_consulta = requests.post(
+                    f"{LOLCLI_API_URL}/ConsultarLinkPagoOrdenPrefactura",
+                    json={"token": token_to_check},
+                    headers=lolcli_headers,
+                )
+
+                if response_consulta.status_code == 404:
+                    print(
+                        "ERROR 404: El endpoint 'ConsultarLinkPagoOrdenPrefactura' no fue encontrado."
+                    )
+                    send_whatsapp_message(
+                        phone_to_reply,
+                        "😔 No pudimos verificar tu pago. Por favor, contacta a nuestro equipo de soporte técnico. 🙏",
+                    )
+                    return jsonify({"status": "error_404_consulting_payment"})
+
+                response_consulta.raise_for_status()
+                data_consulta = response_consulta.json()
+                payment_data = data_consulta.get("data", {})
+
+                if (
+                    data_consulta.get("status") == "success"
+                    and payment_data.get("estado_pago") == "COMPLETADO"
+                ):
+                    send_whatsapp_message(
+                        phone_to_reply,
+                        "¡Pago confirmado! ✅ Procesando el cambio de tu cita, un momento...",
+                    )
+                    payload_actualizar = session.get("reschedule_payload", {})
+                    print(f"INFO ReagendarCitaWsp payload: {payload_actualizar}")
+                    resp = requests.post(
+                        f"{LOLCLI_API_URL}/ReagendarCitaWsp",
+                        json=payload_actualizar,
+                        headers=lolcli_headers,
+                    )
+                    result = resp.json()
+                    print(f"INFO ReagendarCitaWsp response {resp.status_code}: {result}")
+                    if resp.ok and result.get("status") == "success":
+                        send_whatsapp_message(
+                            phone_to_reply,
+                            f"✅ ¡Tu cita ha sido reprogramada exitosamente!\n\n"
+                            f"🗓️ *Nueva fecha:* {session['new_fecha_user']}\n"
+                            f"⏰ *Nueva hora:* {session['new_hora_user']}\n\n"
+                            f"¡Te esperamos! 😊",
+                        )
+                        send_whatsapp_message(
+                            phone_to_reply,
+                            "Gracias. Escribe *'continuar'* si deseas realizar otra consulta o *'salir'* para terminar la sesión. 😊",
+                        )
+                        session["state"] = "AWAITING_POST_FLOW"
+                        user_sessions[sender] = session
+                        return jsonify({"status": "rescheduled"})
+                    else:
+                        raise Exception(
+                            result.get(
+                                "xxmessage", result.get("message", "error desconocido")
+                            )
+                        )
+                else:
+                    current_status = payment_data.get("estado_pago", "desconocido")
+                    print(
+                        f"El estado del pago de reprogramación aún no es 'COMPLETADO'. Estado actual: {current_status}"
+                    )
+                    send_whatsapp_message(
+                        phone_to_reply,
+                        "⏳ Aún no podemos confirmar tu pago. Asegúrate de haber completado la transacción y "
+                        "envíanos el mensaje de confirmación en unos minutos. 🙏",
+                    )
+            except Exception as e:
+                print(f"ERROR Inesperado al consultar pago de reprogramación / reprogramar: {e}")
+                send_whatsapp_message(
+                    phone_to_reply,
+                    "😔 Ocurrió un error al verificar tu pago o al reprogramar tu cita. Por favor, intenta "
+                    "nuevamente o contáctanos. 🙏",
+                )
+        else:
+            send_whatsapp_message(
+                phone_to_reply,
+                "❓ No encontramos un pago pendiente. Por favor, envíanos el mensaje completo de confirmación que recibiste al pagar. 📋",
             )
 
     elif state == "AWAITING_POST_FLOW":
