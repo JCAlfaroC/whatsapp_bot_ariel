@@ -1573,6 +1573,7 @@ def webhook_handler():
             )
             user_sessions[sender] = session
             return jsonify({"status": "invalid_dni"})
+        session["pacdoc"] = doc_number
         try:
             send_whatsapp_message(
                 phone_to_reply, "Un momento, buscando tus citas... 🔍"
@@ -1583,7 +1584,9 @@ def webhook_handler():
             # reprogramación (GenerarLinkPagoOrdenPrefactura). Se consulta
             # ValidarPacienteWsp solo para obtenerlo -- su campo "valido"
             # (regla de 10 días para citas nuevas) no aplica aquí, así que no
-            # se usa para bloquear el acceso a reprogramar.
+            # se usa para bloquear el acceso a reprogramar. Si esto falla o
+            # vuelve vacío, no se bloquea el flujo aquí -- hay un segundo
+            # intento justo antes del pago (AWAITING_RESCHEDULE_CONFIRMATION).
             try:
                 response_paciente = requests.post(
                     f"{LOLCLI_API_URL}/ValidarPacienteWsp",
@@ -1592,6 +1595,10 @@ def webhook_handler():
                     timeout=LOLCLI_TIMEOUT,
                 )
                 pacientes = response_paciente.json().get("paciente", [])
+                print(
+                    f"INFO: ValidarPacienteWsp (reschedule, pachis lookup, doc={doc_number}) "
+                    f"status={response_paciente.status_code} respuesta: {response_paciente.text}"
+                )
                 if pacientes:
                     session["pachis"] = pacientes[0].get("pachis")
             except Exception as e:
@@ -1830,6 +1837,40 @@ def webhook_handler():
                 # confirmado el pago del derecho de reprogramación -- ver
                 # AWAITING_RESCHEDULE_PAYMENT_CONFIRMATION más abajo.
                 session["reschedule_payload"] = payload_actualizar
+
+                # Salvaguarda: el "pachis" normalmente ya se obtuvo en
+                # AWAITING_DOC_NUMBER_FOR_RESCHEDULE, pero esa consulta a
+                # ValidarPacienteWsp pudo fallar o volver vacía en silencio.
+                # GenerarLinkPagoOrdenPrefactura exige "pachis", así que aquí
+                # se reintenta una vez antes de generar el link de pago --
+                # mejor que enviar una solicitud que sabemos que va a fallar.
+                if not session.get("pachis"):
+                    try:
+                        retry_response = requests.post(
+                            f"{LOLCLI_API_URL}/ValidarPacienteWsp",
+                            json={"tidcod": session.get("tidcod"), "pacdoc": session.get("pacdoc")},
+                            headers=lolcli_headers,
+                            timeout=LOLCLI_TIMEOUT,
+                        )
+                        retry_pacientes = retry_response.json().get("paciente", [])
+                        print(
+                            f"INFO: ValidarPacienteWsp (reschedule, pachis retry, doc={session.get('pacdoc')}) "
+                            f"status={retry_response.status_code} respuesta: {retry_response.text}"
+                        )
+                        if retry_pacientes:
+                            session["pachis"] = retry_pacientes[0].get("pachis")
+                    except Exception as e:
+                        print(f"ERROR ValidarPacienteWsp (reschedule, pachis retry): {e}")
+
+                if not session.get("pachis"):
+                    send_whatsapp_message(
+                        phone_to_reply,
+                        "😔 No pudimos verificar tu identificación de paciente para generar el pago. "
+                        "Por favor, intenta de nuevo o contáctanos directamente. 🙏",
+                    )
+                    user_sessions.pop(sender, None)
+                    return jsonify({"status": "pachis_not_found"})
+
                 send_whatsapp_message(
                     phone_to_reply,
                     "Antes de confirmar el cambio, es necesario abonar el derecho de reprogramación de citas. "
