@@ -536,6 +536,13 @@ INFORME_SERVICE_KEYWORDS = ("informe médico general", "informe médico integral
 
 CONSULT_TOP_N = 10
 
+# Reglas de reprogramación confirmadas en el SP SEL_API_LISTAR_CITAS_PACIENTES_WSP:
+# minimo 24h de anticipacion, ventana de 30 dias, y una sola reprogramacion por cita.
+RESCHEDULE_POLICY_NOTE = (
+    "_ℹ️ Recuerda: cada cita solo puede reprogramarse una vez, con un mínimo de "
+    "24 horas de anticipación y dentro de los próximos 30 días._"
+)
+
 # Servicio forzado para el flujo "Agendar reevaluación médica" (menú opción 4).
 REEVAL_SERVICE_NAME = "medicina fisica y rehabilitacion"
 
@@ -784,7 +791,7 @@ def webhook_handler():
             )
             pacientes = response.json().get("paciente", [])
 
-            if pacientes:
+            if pacientes and pacientes[0].get("valido") == "S":
                 paciente = pacientes[0]
                 session.update(
                     {
@@ -796,6 +803,19 @@ def webhook_handler():
                     phone_to_reply, f"¡Hola de nuevo, {paciente['pacpmn']}!"
                 )
                 continue_appointment_flow(session, phone_to_reply, lolcli_headers)
+            elif pacientes:
+                # Paciente registrado (ValidarPacienteWsp lo encontró), pero
+                # "valido": "N" -> no tiene citas atendidas en los últimos 10
+                # días, por lo que no puede agendar por este medio. Al estar
+                # registrado, se le saluda por su nombre en la respuesta.
+                paciente = pacientes[0]
+                send_whatsapp_message(
+                    phone_to_reply,
+                    f"🔍 Hola {paciente['pacpmn']}, encontramos tu registro, pero no cuentas con citas "
+                    "atendidas en los últimos 10 días, por lo que no es posible agendar una nueva cita "
+                    "por este medio. Por favor, acércate personalmente a tu sede. 📞",
+                )
+                user_sessions.pop(sender, None)
             else:
                 # ARIE no permite crear pacientes nuevos por WhatsApp: si no está
                 # registrado en la clínica, se le pide acercarse presencialmente.
@@ -860,7 +880,7 @@ def webhook_handler():
             )
             pacientes = response.json().get("paciente", [])
 
-            if pacientes:
+            if pacientes and pacientes[0].get("valido") == "S":
                 paciente = pacientes[0]
                 session.update(
                     {
@@ -872,6 +892,15 @@ def webhook_handler():
                     phone_to_reply, f"¡Hola de nuevo, {paciente['pacpmn']}!"
                 )
                 continue_appointment_flow(session, phone_to_reply, lolcli_headers)
+            elif pacientes:
+                paciente = pacientes[0]
+                send_whatsapp_message(
+                    phone_to_reply,
+                    f"🔍 Hola {paciente['pacpmn']}, encontramos tu registro, pero no cuentas con citas "
+                    "atendidas en los últimos 10 días, por lo que no es posible agendar una nueva cita "
+                    "por este medio. Por favor, acércate personalmente a tu sede. 📞",
+                )
+                user_sessions.pop(sender, None)
             else:
                 send_whatsapp_message(
                     phone_to_reply,
@@ -1438,14 +1467,37 @@ def webhook_handler():
                 user_sessions.pop(sender, None)
                 return jsonify({"status": "server_error"})
             if not citas:
-                send_whatsapp_message(
-                    phone_to_reply, "📋 No tienes citas agendadas para reprogramar. 😊"
+                # La lista de reprogramables vino vacía. Antes de asumir que el
+                # paciente no tiene ninguna cita, se consulta tipo=C para
+                # distinguir "no tiene ninguna cita" de "tiene citas, pero ya
+                # ninguna es reprogramable" (ya reprogramada una vez o fuera de
+                # la ventana de 24h/30 días).
+                response_todas = requests.post(
+                    f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
+                    json={"nro_documento": doc_number, "tipo": "C"},
+                    headers=lolcli_headers,
                 )
+                data_todas = response_todas.json()
+                todas_server_error = response_todas.status_code >= 500 or data_todas.get("code") == 500
+                citas_todas = [c for c in data_todas.get("citas", []) if c] if not todas_server_error else []
+
+                if citas_todas:
+                    send_whatsapp_message(
+                        phone_to_reply,
+                        "📋 Tienes citas agendadas, pero ninguna puede reprogramarse en este momento. 😊\n\n"
+                        + RESCHEDULE_POLICY_NOTE
+                        + "\n\nSi ya reprogramaste una cita antes, o está fuera de ese rango, ya no se puede volver a reprogramar.",
+                    )
+                else:
+                    send_whatsapp_message(
+                        phone_to_reply, "📋 No tienes ninguna cita agendada en este momento. 😊"
+                    )
                 user_sessions.pop(sender, None)
                 return jsonify({"status": "no_appointments"})
             msg, formatted = format_appointments_list(
                 citas, "¿Cuál cita deseas reprogramar?", mode="reschedule"
             )
+            msg += RESCHEDULE_POLICY_NOTE
             session["options"] = formatted
             session["state"] = "AWAITING_APPOINTMENT_TO_RESCHEDULE"
             send_whatsapp_message(phone_to_reply, msg)
