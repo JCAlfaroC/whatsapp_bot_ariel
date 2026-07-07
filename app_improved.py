@@ -44,6 +44,15 @@ LOLCLI_API_URL = os.getenv("LOLCLI_API_URL")  # clinic system
 LOLCLI_ENTIDAD = os.getenv("LOLCLI_ENTIDAD")
 LOLCLI_API_TOKEN = os.getenv("LOLCLI_API_TOKEN")
 
+# Timeout (segundos) para toda llamada a la API de LOLCLI. Sin esto, requests
+# espera indefinidamente (solo acotado por el stack TCP del SO) si el backend
+# está lento o no responde -- un servidor con más latencia hacia LOLCLI puede
+# necesitar ajustar este valor.
+LOLCLI_TIMEOUT = 15
+# Timeout separado para el gateway de WhatsApp (Evolution API) -- servicio
+# distinto de LOLCLI, no debería compartir el mismo presupuesto de espera.
+EVOLUTION_TIMEOUT = 15
+
 user_sessions = {}  # stores all active conversations in RAM
 lista_sedes_global = []  # clinic branches (loaded once at startup)
 lista_documentos_global = []  # document types (loaded once at startup)
@@ -189,7 +198,7 @@ def preload_global_lists():
             f"{LOLCLI_API_URL}/ListaEstablecimientos",
             json={"entidad": LOLCLI_ENTIDAD},
             headers=headers,
-            timeout=5,
+            timeout=LOLCLI_TIMEOUT,
         )
         if response_sedes.ok:
             lista_sedes_global = response_sedes.json().get("establecimientos", [])
@@ -198,7 +207,7 @@ def preload_global_lists():
             f"{LOLCLI_API_URL}/ListaTipoDocumentoElolcli",
             json={},
             headers=headers,
-            timeout=5,
+            timeout=LOLCLI_TIMEOUT,
         )
         if response_docs.ok:
             docs_filtrados = [
@@ -230,7 +239,7 @@ def send_whatsapp_message(phone_number, text):
     payload = {"number": phone_number, "text": text}
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, timeout=EVOLUTION_TIMEOUT)
         response.raise_for_status()
         print(f"Mensaje enviado con éxito a {phone_number}.")
     except requests.exceptions.RequestException as e:
@@ -285,6 +294,7 @@ def replay_state_prompt(state, session, phone_to_reply, headers):
             f"{LOLCLI_API_URL}/ListaEstablecimientos",
             json={"entidad": LOLCLI_ENTIDAD},
             headers=headers,
+            timeout=LOLCLI_TIMEOUT,
         )
         options = response.json().get("establecimientos", [])
         reply, formatted_options = format_menu(
@@ -300,6 +310,7 @@ def replay_state_prompt(state, session, phone_to_reply, headers):
             f"{LOLCLI_API_URL}/ListaServiciosWsp",
             json={"siscod": session["siscod"]},
             headers=headers,
+            timeout=LOLCLI_TIMEOUT,
         )
         options = response.json().get("servicios", [])
         reply, formatted_options = format_menu(
@@ -316,6 +327,7 @@ def replay_state_prompt(state, session, phone_to_reply, headers):
             f"{LOLCLI_API_URL}/ListaMedicos",
             json=payload_medicos,
             headers=lolcli_headers,
+            timeout=LOLCLI_TIMEOUT,
         )
         medicos = response_medicos.json().get("medicos", [])
         reply, formatted_options = format_menu(
@@ -338,6 +350,7 @@ def replay_state_prompt(state, session, phone_to_reply, headers):
             f"{LOLCLI_API_URL}/ListaCuposDisponibles",
             json=payload,
             headers=lolcli_headers,
+            timeout=LOLCLI_TIMEOUT,
         )
         fechas_disponibles = response.json().get("cupos", [])
         reply, formatted_options = format_menu(
@@ -372,7 +385,7 @@ def generate_payment_link_and_send(session, phone_to_reply, headers):
         url_pago = f"{LOLCLI_API_URL}/GenerarLinkPagoCita"
         print(f"INFO: Generando link de pago con payload: {payload_pago}")
 
-        response_link = requests.post(url_pago, json=payload_pago, headers=headers)
+        response_link = requests.post(url_pago, json=payload_pago, headers=headers, timeout=LOLCLI_TIMEOUT)
         response_link.raise_for_status()
         data_link = response_link.json()
 
@@ -438,7 +451,7 @@ def generate_reschedule_payment_link_and_send(session, phone_to_reply, headers):
         url_pago = f"{LOLCLI_API_URL}/GenerarLinkPagoOrdenPrefactura"
         print(f"INFO: Generando link de pago de reprogramación con payload: {payload_pago}")
 
-        response_link = requests.post(url_pago, json=payload_pago, headers=headers)
+        response_link = requests.post(url_pago, json=payload_pago, headers=headers, timeout=LOLCLI_TIMEOUT)
         response_link.raise_for_status()
         data_link = response_link.json()
 
@@ -488,12 +501,21 @@ def continue_appointment_flow(session, phone_to_reply, lolcli_headers):
         phone_to_reply,
         "✅ ¡Excelente! Ya tenemos tus datos. Ahora continuemos con los detalles de tu cita. 😊",
     )
-    response_est = requests.post(
-        f"{LOLCLI_API_URL}/ListaEstablecimientos",
-        json={"entidad": LOLCLI_ENTIDAD},
-        headers=lolcli_headers,
-    )
-    establecimientos = response_est.json().get("establecimientos", [])
+    try:
+        response_est = requests.post(
+            f"{LOLCLI_API_URL}/ListaEstablecimientos",
+            json={"entidad": LOLCLI_ENTIDAD},
+            headers=lolcli_headers,
+            timeout=LOLCLI_TIMEOUT,
+        )
+        establecimientos = response_est.json().get("establecimientos", [])
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR en continue_appointment_flow (ListaEstablecimientos): {e}")
+        send_whatsapp_message(
+            phone_to_reply,
+            "😔 Tuvimos un problema técnico al buscar las sedes disponibles. Por favor, intenta de nuevo en unos minutos. 🙏",
+        )
+        return
     reply, opts = format_menu(
         "Para empezar, ¿en cuál de nuestras sedes te gustaría atenderte?",
         establecimientos,
@@ -533,12 +555,21 @@ def present_specialty_or_force_reeval(session, phone_to_reply, lolcli_headers, s
 
 def fetch_and_prompt_doctors(session, phone_to_reply, lolcli_headers):
     payload_medicos = {"siscod": session["siscod"], "sercod": session["sercod"]}
-    response_medicos = requests.post(
-        f"{LOLCLI_API_URL}/ListaMedicos",
-        json=payload_medicos,
-        headers=lolcli_headers,
-    )
-    medicos = response_medicos.json().get("medicos", [])
+    try:
+        response_medicos = requests.post(
+            f"{LOLCLI_API_URL}/ListaMedicos",
+            json=payload_medicos,
+            headers=lolcli_headers,
+            timeout=LOLCLI_TIMEOUT,
+        )
+        medicos = response_medicos.json().get("medicos", [])
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR en fetch_and_prompt_doctors (ListaMedicos): {e}")
+        send_whatsapp_message(
+            phone_to_reply,
+            "😔 Tuvimos un problema técnico al buscar los médicos disponibles. Por favor, intenta de nuevo en unos minutos. 🙏",
+        )
+        return
     if not medicos:
         send_whatsapp_message(
             phone_to_reply,
@@ -851,6 +882,7 @@ def webhook_handler():
                 f"{LOLCLI_API_URL}/ValidarPacienteWsp",
                 json=payload,
                 headers=lolcli_headers,
+                timeout=LOLCLI_TIMEOUT,
             )
             pacientes = response.json().get("paciente", [])
 
@@ -940,6 +972,7 @@ def webhook_handler():
                 f"{LOLCLI_API_URL}/ValidarPacienteWsp",
                 json={"tidcod": tidcod, "pacdoc": doc_number},
                 headers=lolcli_headers,
+                timeout=LOLCLI_TIMEOUT,
             )
             pacientes = response.json().get("paciente", [])
 
@@ -986,12 +1019,22 @@ def webhook_handler():
             session.setdefault("history", []).append("AWAITING_ESTABLISHMENT")
             session["siscod"] = selected_option["siscod"]
             session["establishment_name"] = selected_option["sisent"]
-            response = requests.post(
-                f"{LOLCLI_API_URL}/ListaServiciosWsp",
-                json={"siscod": session["siscod"]},
-                headers=lolcli_headers,
-            )
-            servicios = response.json().get("servicios", [])
+            try:
+                response = requests.post(
+                    f"{LOLCLI_API_URL}/ListaServiciosWsp",
+                    json={"siscod": session["siscod"]},
+                    headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
+                )
+                servicios = response.json().get("servicios", [])
+            except requests.exceptions.RequestException as e:
+                print(f"ERROR en AWAITING_ESTABLISHMENT_CLARIFICATION (ListaServiciosWsp): {e}")
+                send_whatsapp_message(
+                    phone_to_reply,
+                    "😔 Tuvimos un problema técnico al buscar las especialidades disponibles. Por favor, intenta de nuevo en unos minutos. 🙏",
+                )
+                user_sessions[sender] = session
+                return jsonify({"status": "server_error"})
             present_specialty_or_force_reeval(
                 session, phone_to_reply, lolcli_headers, servicios,
                 f"¡Perfecto! Ahora, para la sede *{session['establishment_name']}*, ¿qué especialidad necesitas?",
@@ -1010,12 +1053,22 @@ def webhook_handler():
             session.setdefault("history", []).append("AWAITING_ESTABLISHMENT")
             session["siscod"] = selected_option["siscod"]
             session["establishment_name"] = selected_option["sisent"]
-            response = requests.post(
-                f"{LOLCLI_API_URL}/ListaServiciosWsp",
-                json={"siscod": session["siscod"]},
-                headers=lolcli_headers,
-            )
-            servicios = response.json().get("servicios", [])
+            try:
+                response = requests.post(
+                    f"{LOLCLI_API_URL}/ListaServiciosWsp",
+                    json={"siscod": session["siscod"]},
+                    headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
+                )
+                servicios = response.json().get("servicios", [])
+            except requests.exceptions.RequestException as e:
+                print(f"ERROR en AWAITING_ESTABLISHMENT (ListaServiciosWsp): {e}")
+                send_whatsapp_message(
+                    phone_to_reply,
+                    "😔 Tuvimos un problema técnico al buscar las especialidades disponibles. Por favor, intenta de nuevo en unos minutos. 🙏",
+                )
+                user_sessions[sender] = session
+                return jsonify({"status": "server_error"})
             present_specialty_or_force_reeval(
                 session, phone_to_reply, lolcli_headers, servicios,
                 f"Entendido. Ahora, ¿para qué especialidad en *{session['establishment_name']}* necesitas la cita?",
@@ -1064,6 +1117,7 @@ def webhook_handler():
                 f"{LOLCLI_API_URL}/ListaCuposDisponibles",
                 json=payload,
                 headers=lolcli_headers,
+                timeout=LOLCLI_TIMEOUT,
             )
             all_cupos = response.json().get("cupos", [])
             session["all_cupos"] = all_cupos
@@ -1111,6 +1165,7 @@ def webhook_handler():
                         "invnum": 0,
                     },
                     headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
                 ).json().get("horarios", [])
                 horarios = [h for h in horarios_raw if h.get("estado") == "D"] or PRESET_HORARIOS
             except Exception as e:
@@ -1173,7 +1228,10 @@ def webhook_handler():
                 "cittip": session["cittip"],
             }
             response = requests.post(
-                f"{LOLCLI_API_URL}/ListaTarifarioWsp", json=payload, headers=lolcli_headers
+                f"{LOLCLI_API_URL}/ListaTarifarioWsp",
+                json=payload,
+                headers=lolcli_headers,
+                timeout=LOLCLI_TIMEOUT,
             )
             try:
                 response.raise_for_status()
@@ -1259,6 +1317,7 @@ def webhook_handler():
                     f"{LOLCLI_API_URL}/RegistroCita",
                     json=payload_cita,
                     headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
                 )
                 response_data = response.json()
 
@@ -1274,6 +1333,7 @@ def webhook_handler():
                             f"{LOLCLI_API_URL}/ListaPagosPendientes",
                             json=payload_pagos,
                             headers=lolcli_headers,
+                            timeout=LOLCLI_TIMEOUT,
                         )
                         if response_pagos.ok:
                             for pago in response_pagos.json().get("pendientes", []):
@@ -1338,7 +1398,10 @@ def webhook_handler():
                 payload_consulta = {"token": token_to_check}
                 url_consulta = f"{LOLCLI_API_URL}/ConsultarLinkPago"
                 response_consulta = requests.post(
-                    url_consulta, json=payload_consulta, headers=lolcli_headers
+                    url_consulta,
+                    json=payload_consulta,
+                    headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
                 )
 
                 if response_consulta.status_code == 404:
@@ -1425,6 +1488,7 @@ def webhook_handler():
                     f"{LOLCLI_API_URL}/ValidarPacienteWsp",
                     json={"tidcod": tidcod, "pacdoc": doc_number},
                     headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
                 )
                 .json()
                 .get("paciente", [])
@@ -1445,6 +1509,7 @@ def webhook_handler():
                 f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
                 json={"nro_documento": doc_number, "tipo": "C"},
                 headers=lolcli_headers,
+                timeout=LOLCLI_TIMEOUT,
             )
             data_citas = response_citas.json()
             print(f"INFO: ListarCitasPacientesWsp (consult, doc={doc_number}) respuesta: {data_citas}")
@@ -1524,6 +1589,7 @@ def webhook_handler():
                     f"{LOLCLI_API_URL}/ValidarPacienteWsp",
                     json={"tidcod": tidcod, "pacdoc": doc_number},
                     headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
                 )
                 pacientes = response_paciente.json().get("paciente", [])
                 if pacientes:
@@ -1535,6 +1601,7 @@ def webhook_handler():
                 f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
                 json={"nro_documento": doc_number, "tipo": "R"},
                 headers=lolcli_headers,
+                timeout=LOLCLI_TIMEOUT,
             )
             data_citas = response_citas.json()
             print(f"INFO: ListarCitasPacientesWsp (reschedule, doc={doc_number}) respuesta: {data_citas}")
@@ -1558,6 +1625,7 @@ def webhook_handler():
                     f"{LOLCLI_API_URL}/ListarCitasPacientesWsp",
                     json={"nro_documento": doc_number, "tipo": "C"},
                     headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
                 )
                 data_todas = response_todas.json()
                 todas_server_error = response_todas.status_code >= 500 or data_todas.get("code") == 500
@@ -1630,6 +1698,7 @@ def webhook_handler():
                         "fecha": today_str,
                     },
                     headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
                 )
                 .json()
                 .get("cupos", [])
@@ -1683,6 +1752,7 @@ def webhook_handler():
                         "invnum": int(session["citid_to_reschedule"]),
                     },
                     headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
                 ).json().get("horarios", [])
                 horarios = [h for h in horarios_raw if h.get("estado") == "D"] or PRESET_HORARIOS
             except Exception as e:
@@ -1806,6 +1876,7 @@ def webhook_handler():
                     f"{LOLCLI_API_URL}/ConsultarLinkPagoOrdenPrefactura",
                     json={"token": token_to_check},
                     headers=lolcli_headers,
+                    timeout=LOLCLI_TIMEOUT,
                 )
 
                 if response_consulta.status_code == 404:
@@ -1836,6 +1907,7 @@ def webhook_handler():
                         f"{LOLCLI_API_URL}/ReagendarCitaWsp",
                         json=payload_actualizar,
                         headers=lolcli_headers,
+                        timeout=LOLCLI_TIMEOUT,
                     )
                     result = resp.json()
                     print(f"INFO ReagendarCitaWsp response {resp.status_code}: {result}")
