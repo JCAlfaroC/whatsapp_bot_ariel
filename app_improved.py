@@ -539,8 +539,11 @@ def present_specialty_or_force_reeval(session, phone_to_reply, lolcli_headers, s
                 f"😔 *{session['establishment_name']}* no ofrece reevaluación médica de Medicina Física y "
                 "Rehabilitación. Escribe retroceder para elegir otra sede o salir para cancelar.",
             )
-            if session.get("history"):
-                session["history"].pop()
+            # NO hacer pop aquí: el estado (AWAITING_ESTABLISHMENT) no avanzó,
+            # así que la entrada de historial ya fue registrada por quien
+            # llamó a esta función. Si también se hace pop aquí, "retroceder"
+            # (que hace su propio pop) termina saltando dos pasos en vez de
+            # uno, y puede vaciar el historial y reiniciar la sesión entera.
             return
         session["sercod"] = match["sercod"]
         session["sernam"] = match["serdes"]
@@ -577,10 +580,14 @@ def fetch_and_prompt_doctors(session, phone_to_reply, lolcli_headers):
         )
         send_whatsapp_message(
             phone_to_reply,
-            "Escribe retroceder para elegir otra especialidad o salir para cancelar.",
+            "Puedes escribir el número de otra especialidad de la lista anterior, "
+            "*retroceder* para elegir otra sede, o *salir* para cancelar.",
         )
-        if session.get("history"):
-            session["history"].pop()
+        # NO hacer pop aquí -- ver comentario equivalente en
+        # present_specialty_or_force_reeval. El estado sigue siendo
+        # AWAITING_SPECIALTY (no avanzó), así que session["options"] todavía
+        # tiene la lista de especialidades: el usuario puede simplemente
+        # escribir otro número sin necesidad de "retroceder".
     else:
         reply, formatted_options = format_menu(
             "Estos son los doctores con espacio:", medicos, "medcod", "mednam"
@@ -1258,11 +1265,20 @@ def webhook_handler():
                 ]
 
             if not tarifas:
+                # El estado se mantiene en AWAITING_APPOINTMENT_TYPE (no
+                # avanzó), así que el usuario puede simplemente escribir 1 o 2
+                # de nuevo para probar la otra modalidad, sin necesidad de
+                # "retroceder". NO hacer pop aquí -- ver comentario en
+                # present_specialty_or_force_reeval/fetch_and_prompt_doctors:
+                # esta entrada de historial ya la agregó este mismo bloque
+                # arriba: hacer pop de nuevo hace que "retroceder" (que hace
+                # su propio pop) salte dos pasos en vez de uno.
                 send_whatsapp_message(
                     phone_to_reply,
-                    "😔 No encontramos tarifas para este tipo de consulta. Escribe retroceder para intentar con otra modalidad. 🙏",
+                    "😔 No encontramos tarifas para este tipo de consulta. Puedes escribir *1* (Presencial) o "
+                    "*2* (Virtual) para probar la otra modalidad, *retroceder* para elegir otro horario, o "
+                    "*salir* para cancelar. 🙏",
                 )
-                session["history"].pop()
             else:
                 reply, formatted_options = format_menu(
                     "Estas son las tarifas disponibles:", tarifas, "tarcod", "tardes"
@@ -1715,9 +1731,14 @@ def webhook_handler():
                 .get("cupos", [])
             )
             if not all_cupos:
+                # El estado se mantiene en AWAITING_APPOINTMENT_TO_RESCHEDULE
+                # y session["options"] (la lista de citas) no se sobreescribe,
+                # así que el usuario puede simplemente escribir el número de
+                # otra cita de la lista anterior sin necesidad de "retroceder".
                 send_whatsapp_message(
                     phone_to_reply,
-                    "😔 No hay fechas disponibles para ese médico en este momento. Escribe *salir* para cancelar.",
+                    "😔 No hay fechas disponibles para ese médico en este momento. Puedes escribir el número de "
+                    "otra cita de la lista anterior, o *salir* para cancelar.",
                 )
             else:
                 # Store all cupos so we can filter by date when user picks one
