@@ -58,14 +58,24 @@ lista_sedes_global = []  # clinic branches (loaded once at startup)
 lista_documentos_global = []  # document types (loaded once at startup)
 
 # --- Configuración de Tiempos de Inactividad ---
-INACTIVITY_REMINDER_PERIOD = 5 * 60
-SESSION_EXPIRATION_PERIOD = 10 * 60
+# Sesión total: 3 minutos. Se envía un aviso por cada minuto de inactividad
+# (a los ~60s y ~120s) antes del cierre a los ~180s.
+INACTIVITY_REMINDER_INTERVAL = 60
+SESSION_EXPIRATION_PERIOD = 3 * 60
+
+# El intervalo de sondeo es menor al de aviso/cierre a propósito: con un
+# presupuesto total de solo 3 minutos, un sondeo de 60s podría retrasar un
+# aviso o el cierre hasta casi un minuto extra (el temporizador es compartido
+# entre todas las sesiones, no uno por sesión). 20s da buena precisión con
+# costo despreciable, ya que el cuerpo del bucle descarta al instante las
+# sesiones inactivas o en "START".
+CLEANUP_POLL_INTERVAL = 20
 
 
 # --- Tarea en segundo plano y funciones auxiliares ---
 def session_cleanup_task():
     while True:
-        time.sleep(60)
+        time.sleep(CLEANUP_POLL_INTERVAL)
         current_time = time.time()
         for sender in list(user_sessions.keys()):
             session = user_sessions.get(sender)
@@ -94,15 +104,16 @@ def session_cleanup_task():
                 )
                 user_sessions.pop(sender, None)
                 continue
-            if inactive_time > INACTIVITY_REMINDER_PERIOD and not session.get(
-                "reminder_sent"
-            ):
-                print(f"INFO: Enviando recordatorio de inactividad a {sender}.")
+            reminders_due = int(inactive_time // INACTIVITY_REMINDER_INTERVAL)
+            reminders_sent = session.get("reminders_sent", 0)
+            if reminders_due > reminders_sent:
+                print(f"INFO: Enviando recordatorio de inactividad a {sender} (aviso #{reminders_due}).")
                 send_whatsapp_message(
                     phone_to_reply,
-                    "👋 ¡Hola! Notamos que dejaste tu cita a medias. ¿Deseas continuar? Si no respondemos pronto, tu sesión se cerrará automáticamente. 🕐",
+                    "👋 ¡Hola! Notamos que dejaste tu cita a medias. Tu sesión se cerrará por inactividad en "
+                    "aproximadamente 1 minuto si no respondemos pronto. 🕐",
                 )
-                session["reminder_sent"] = True
+                session["reminders_sent"] = reminders_due
 
 
 def save_reminder(session):
@@ -644,6 +655,13 @@ RESCHEDULE_POLICY_NOTE = (
     "24 horas de anticipación y dentro de los próximos 30 días._"
 )
 
+# ListaTarifarioWsp no devuelve el monto (el precio depende de paciente/plan/
+# subplan y se resuelve recién al registrar la cita) -- confirmado por
+# LOLIMSA. Este aviso solo fija expectativa; no implica un cambio de API.
+TARIFA_PRICE_NOTE = (
+    "_ℹ️ El monto exacto de tu tarifa se te mostrará más adelante, antes de confirmar el pago._"
+)
+
 # Servicio forzado para el flujo "Agendar reevaluación médica" (menú opción 4).
 REEVAL_SERVICE_NAME = "medicina fisica y rehabilitacion"
 
@@ -765,7 +783,7 @@ def webhook_handler():
     }
 
     session["last_interaction_time"] = time.time()
-    session["reminder_sent"] = False
+    session["reminders_sent"] = 0
 
     if message_text.lower() in ["salir", "cancelar"]:
         user_sessions.pop(sender, None)
@@ -844,8 +862,12 @@ def webhook_handler():
             # registrados con DNI real en el flujo de reprogramación).
             session["tidcod"] = "01"
             session["tiddes"] = "D.N.I."
-            session["state"] = "AWAITING_DOC_NUMBER_FOR_RESCHEDULE"
-            send_whatsapp_message(phone_to_reply, "🔄 Para reprogramar tu cita, ingresa tu número de D.N.I.")
+            session["state"] = "AWAITING_RESCHEDULE_FEE_CONFIRMATION"
+            send_whatsapp_message(
+                phone_to_reply,
+                "🔄 Para reprogramar tu cita, primero ten en cuenta que aplica un derecho de reprogramación de "
+                "*S/ 15.00*. ¿Deseas continuar? Responde *Sí* o *No*.",
+            )
 
         else:
             send_whatsapp_message(
@@ -1285,7 +1307,7 @@ def webhook_handler():
                 )
                 session["options"] = formatted_options
                 session["state"] = "AWAITING_TARIFF"
-                send_whatsapp_message(phone_to_reply, reply)
+                send_whatsapp_message(phone_to_reply, reply + "\n\n" + TARIFA_PRICE_NOTE)
 
     elif state == "AWAITING_TARIFF":
         selected_option = process_user_choice(
@@ -1566,6 +1588,19 @@ def webhook_handler():
             )
 
     # ── RESCHEDULE FLOW ──────────────────────────────────────────────────────
+
+    elif state == "AWAITING_RESCHEDULE_FEE_CONFIRMATION":
+        if message_text.lower() in ["sí", "si"]:
+            session["state"] = "AWAITING_DOC_NUMBER_FOR_RESCHEDULE"
+            send_whatsapp_message(phone_to_reply, "Perfecto. Ingresa tu número de D.N.I.")
+        elif message_text.lower() == "no":
+            send_whatsapp_message(
+                phone_to_reply,
+                "Entendido, no continuaremos con la reprogramación. 😊",
+            )
+            show_main_menu(phone_to_reply, session)
+        else:
+            send_whatsapp_message(phone_to_reply, "❓ Por favor, responde *Sí* o *No*.")
 
     elif state == "AWAITING_DOC_TYPE_FOR_RESCHEDULE":
         selected_option = process_user_choice(
@@ -2050,5 +2085,8 @@ if __name__ == "__main__":
     # un solo mensaje entrante puede retener un thread varios segundos. Con
     # solo 4 threads, 2 usuarios probando a la vez ya satura la cola
     # ("Task queue depth" creciente en el log). Más threads es seguro aquí
-    # porque el tiempo se gasta esperando (sleep/red), no en CPU.
-    serve(app, host="0.0.0.0", port=port, threads=24)
+    # porque el tiempo se gasta esperando (sleep/red), no en CPU. Configurable
+    # vía WAITRESS_THREADS para poder ajustar en despliegue sin tocar código;
+    # el default (50) da margen sobre el requisito de 30+ sesiones activas.
+    threads = int(os.getenv("WAITRESS_THREADS", 50))
+    serve(app, host="0.0.0.0", port=port, threads=threads)
