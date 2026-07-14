@@ -295,10 +295,10 @@ def fetch_tarifa_price(session, tarcod, headers):
         )
         costos = response.json().get("costos", [])
         if costos:
-            return float(costos[0]["totnet"])
+            return float(costos[0]["totnet"]), costos[0].get("plnnum")
     except (requests.exceptions.RequestException, ValueError, KeyError) as e:
         print(f"ERROR fetch_tarifa_price (tarcod={tarcod}): {e}")
-    return None
+    return None, None
 
 
 def process_user_choice(user_input, options, key_name=None):
@@ -1309,9 +1309,10 @@ def webhook_handler():
                 ]
 
             for t in tarifas:
-                precio = fetch_tarifa_price(session, t.get("tarcod"), lolcli_headers)
+                precio, plnnum = fetch_tarifa_price(session, t.get("tarcod"), lolcli_headers)
                 if precio is not None:
                     t["precio"] = precio
+                    t["plnnum"] = plnnum
 
             if not tarifas:
                 # El estado se mantiene en AWAITING_APPOINTMENT_TYPE (no
@@ -1345,6 +1346,7 @@ def webhook_handler():
             session["tarcod"] = selected_option["tarcod"]
             session["tardes"] = selected_option["tardes"]
             session["tarifa_precio"] = selected_option.get("precio")
+            session["tarifa_plnnum"] = selected_option.get("plnnum")
             send_whatsapp_message(phone_to_reply, f"Ok, elegiste *'{session['tardes']}'*.")
             show_final_summary(session, phone_to_reply)
         else:
@@ -1375,12 +1377,19 @@ def webhook_handler():
                     "totnet": 0.0,
                     "totimp": 0.0,
                     "seccit": 0,
-                    # TODO: confirmar con LOLIMSA si prgori/plnnum son constantes
-                    # fijas de LOLCLI o códigos específicos del tenant anterior
-                    # que deben cambiar para ARIE (no se cambia a ciegas porque
-                    # un valor incorrecto podría romper el registro de la cita).
+                    # TODO: confirmar con LOLIMSA si prgori es una constante fija
+                    # de LOLCLI o un código específico del tenant anterior que
+                    # deba cambiar para ARIE.
                     "prgori": "QU",
-                    "plnnum": "161003",
+                    # plnnum: el plan real del paciente, resuelto por
+                    # ItemCostoServicio durante la vista previa de tarifas
+                    # (session["tarifa_plnnum"]). "161003" era un placeholder
+                    # heredado del workflow n8n original, ignorado por
+                    # ItemCostoServicio y no verificado contra el plan real del
+                    # paciente -- se mantiene como fallback solo si la
+                    # resolución del plan falló (no debería ocurrir, ya que
+                    # session["pachis"] es obligatorio para llegar aquí).
+                    "plnnum": session.get("tarifa_plnnum") or "161003",
                 }
 
                 response = requests.post(
