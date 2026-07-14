@@ -636,6 +636,9 @@ def fetch_and_prompt_doctors(session, phone_to_reply, lolcli_headers):
 
 def show_final_summary(session, phone_to_reply):
     patient_name = session.get("paciente_nombre")
+    tarifa_line = session["tardes"]
+    if session.get("tarifa_precio") is not None:
+        tarifa_line += f" – S/ {session['tarifa_precio']:.2f}"
 
     summary = (
         f"¡Casi listo! ✨ Por favor, revisa que todo esté correcto:\n\n"
@@ -645,7 +648,7 @@ def show_final_summary(session, phone_to_reply):
         f"👨‍⚕️ *Médico:* {session['mednam']}\n"
         f"🗓️ *Fecha:* {session['fecha_user']}\n"
         f"⏰ *Hora:* {session['hora_user']}\n"
-        f"🏷️ *Tarifa:* {session['tardes']}\n\n"
+        f"🏷️ *Tarifa:* {tarifa_line}\n\n"
         f"Si todo está bien, escribe *'Sí'* para confirmar tu cita."
     )
 
@@ -1341,6 +1344,7 @@ def webhook_handler():
             session.setdefault("history", []).append("AWAITING_TARIFF")
             session["tarcod"] = selected_option["tarcod"]
             session["tardes"] = selected_option["tardes"]
+            session["tarifa_precio"] = selected_option.get("precio")
             send_whatsapp_message(phone_to_reply, f"Ok, elegiste *'{session['tardes']}'*.")
             show_final_summary(session, phone_to_reply)
         else:
