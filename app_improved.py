@@ -257,7 +257,7 @@ def send_whatsapp_message(phone_number, text):
         print(f"ERROR AL ENVIAR MENSAJE: {e}")
 
 
-def format_menu(title, items, key_id, key_name):
+def format_menu(title, items, key_id, key_name, key_price=None):
     menu_text = f"{title}\n\n"
     formatted_items = []
     for i, item in enumerate(items, 1):
@@ -268,11 +268,37 @@ def format_menu(title, items, key_id, key_name):
                 display_name = format_date_es(date_obj)
             except (ValueError, TypeError):
                 display_name = item.get(key_id, "Fecha inválida")
+        if key_price and item.get(key_price) is not None:
+            display_name = f"{display_name} – S/ {item[key_price]:.2f}"
         menu_text += f"*{i}.* {display_name}\n"
         item_data = {"id": i, "data": item}
         formatted_items.append(item_data)
     menu_text += "\n_Escribe el número o el nombre de tu elección._\n_También puedes escribir *'retroceder'* o *'salir'*._"
     return menu_text, formatted_items
+
+
+def fetch_tarifa_price(session, tarcod, headers):
+    payload = {
+        "siscod": int(session["siscod"]),
+        "sercod": session["sercod"],
+        "medcod": session["medcod"],
+        "cittip": session["cittip"],
+        "pachis": session["pachis"],
+        "tarcod": tarcod,
+    }
+    try:
+        response = requests.post(
+            f"{LOLCLI_API_URL}/ItemCostoServicio",
+            json=payload,
+            headers=headers,
+            timeout=LOLCLI_TIMEOUT,
+        )
+        costos = response.json().get("costos", [])
+        if costos:
+            return float(costos[0]["totnet"])
+    except (requests.exceptions.RequestException, ValueError, KeyError) as e:
+        print(f"ERROR fetch_tarifa_price (tarcod={tarcod}): {e}")
+    return None
 
 
 def process_user_choice(user_input, options, key_name=None):
@@ -653,13 +679,6 @@ CONSULT_TOP_N = 10
 RESCHEDULE_POLICY_NOTE = (
     "_ℹ️ Recuerda: cada cita solo puede reprogramarse una vez, con un mínimo de "
     "24 horas de anticipación y dentro de los próximos 30 días._"
-)
-
-# ListaTarifarioWsp no devuelve el monto (el precio depende de paciente/plan/
-# subplan y se resuelve recién al registrar la cita) -- confirmado por
-# LOLIMSA. Este aviso solo fija expectativa; no implica un cambio de API.
-TARIFA_PRICE_NOTE = (
-    "_ℹ️ El monto exacto de tu tarifa se te mostrará más adelante, antes de confirmar el pago._"
 )
 
 # Servicio forzado para el flujo "Agendar reevaluación médica" (menú opción 4).
@@ -1286,6 +1305,11 @@ def webhook_handler():
                     if not any(kw in normalize_text(t.get("tardes", "")) for kw in REEVAL_EXCLUDED_TARIFA_KEYWORDS)
                 ]
 
+            for t in tarifas:
+                precio = fetch_tarifa_price(session, t.get("tarcod"), lolcli_headers)
+                if precio is not None:
+                    t["precio"] = precio
+
             if not tarifas:
                 # El estado se mantiene en AWAITING_APPOINTMENT_TYPE (no
                 # avanzó), así que el usuario puede simplemente escribir 1 o 2
@@ -1303,11 +1327,11 @@ def webhook_handler():
                 )
             else:
                 reply, formatted_options = format_menu(
-                    "Estas son las tarifas disponibles:", tarifas, "tarcod", "tardes"
+                    "Estas son las tarifas disponibles:", tarifas, "tarcod", "tardes", key_price="precio"
                 )
                 session["options"] = formatted_options
                 session["state"] = "AWAITING_TARIFF"
-                send_whatsapp_message(phone_to_reply, reply + "\n\n" + TARIFA_PRICE_NOTE)
+                send_whatsapp_message(phone_to_reply, reply)
 
     elif state == "AWAITING_TARIFF":
         selected_option = process_user_choice(
