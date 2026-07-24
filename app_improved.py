@@ -1381,15 +1381,18 @@ def webhook_handler():
                     # de LOLCLI o un código específico del tenant anterior que
                     # deba cambiar para ARIE.
                     "prgori": "QU",
-                    # plnnum: el plan real del paciente, resuelto por
-                    # ItemCostoServicio durante la vista previa de tarifas
-                    # (session["tarifa_plnnum"]). "161003" era un placeholder
-                    # heredado del workflow n8n original, ignorado por
-                    # ItemCostoServicio y no verificado contra el plan real del
-                    # paciente -- se mantiene como fallback solo si la
-                    # resolución del plan falló (no debería ocurrir, ya que
-                    # session["pachis"] es obligatorio para llegar aquí).
-                    "plnnum": session.get("tarifa_plnnum") or "161003",
+                    # REVERTIDO 2026-07-14: se probó usando el plan real del
+                    # paciente (session["tarifa_plnnum"], resuelto por
+                    # ItemCostoServicio) en vez de este literal, y RegistroCita
+                    # falló en producción con "El SP devolvió status error sin
+                    # mensaje" (paciente pachis 0005029, plan real 200002).
+                    # Indica que el SP de LOLCLI no acepta cualquier plnnum --
+                    # "161003" (posiblemente junto a prgori "QU") parece ser un
+                    # valor requerido/lista blanca, no solo un placeholder mal
+                    # migrado. Revertido a la constante conocida-funcional
+                    # hasta que LOLIMSA confirme el valor correcto (ver
+                    # pregunta sobre TP000001 pendiente de respuesta).
+                    "plnnum": "161003",
                 }
 
                 response = requests.post(
